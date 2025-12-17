@@ -1,0 +1,102 @@
+name: Documentation Issue
+description: Report missing, incorrect, or confusing documentation
+title: "[Docs]: "
+labels: ["documentation", "status: needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the documentation! Please fill out the form below.
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation Type
+      options:
+        - README
+        - Installation Guide
+        - Getting Started / Tutorial
+        - CLI Reference
+        - Configuration Reference
+        - API Documentation
+        - Architecture / Internals
+        - Contributing Guide
+        - Code Comments
+        - Error Messages
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      options:
+        - Missing documentation
+        - Incorrect / outdated information
+        - Confusing / unclear explanation
+        - Typo / grammatical error
+        - Broken link
+        - Missing example
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Documentation Location
+      description: Link to the documentation page or file path
+      placeholder: https://github.com/themusic-space/flaase/blob/main/docs/getting-started.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current Documentation
+      description: What does the documentation currently say? (Quote or describe)
+      placeholder: |
+        The documentation says:
+        > "Run `fl init` to initialize..."
+        
+        Or: The section on database setup is missing entirely.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's Wrong / Missing?
+      description: Explain what's incorrect, missing, or confusing.
+      placeholder: |
+        This is confusing because...
+        
+        This is incorrect because the actual behavior is...
+        
+        This is missing information about...
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How should the documentation be improved?
+      placeholder: |
+        The documentation should explain that...
+        
+        A code example showing X would help...
+        
+        The correct command is actually...
+
+  - type: dropdown
+    id: willing-to-pr
+    attributes:
+      label: Would you be willing to submit a PR with the fix?
+      options:
+        - "Yes"
+        - "Yes, with guidance"
+        - "No"

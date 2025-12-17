@@ -1,0 +1,135 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: ["enhancement", "status: needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please fill out the form below.
+        
+        Before submitting, please check if a similar feature has already been requested in [Issues](https://github.com/themusic-space/flaase/issues) or [Discussions](https://github.com/themusic-space/flaase/discussions/categories/ideas).
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues and discussions to ensure this feature hasn't been requested
+          required: true
+        - label: This feature aligns with Flaase's goal of simple VPS deployment
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature Area
+      description: Which part of Flaase does this relate to?
+      options:
+        - CLI / Commands
+        - Server Setup
+        - Deployment
+        - Docker / Containers
+        - Traefik / Routing
+        - SSL / Certificates
+        - Database Management
+        - Backup / Restore
+        - CI/CD Runners
+        - Templates
+        - Configuration
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? Is this related to a frustration?
+      placeholder: |
+        I'm always frustrated when I have to manually...
+        
+        Currently, there's no way to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like to see.
+      placeholder: |
+        I would like a new command `fl <command>` that...
+        
+        The workflow would be:
+        1. User runs...
+        2. CLI prompts for...
+        3. System does...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+      placeholder: |
+        I've tried working around this by...
+        
+        Another approach could be...
+
+  - type: textarea
+    id: cli-example
+    attributes:
+      label: CLI Example
+      description: If applicable, show how the CLI command would look.
+      render: shell
+      placeholder: |
+        # Example usage
+        fl new-command --flag value
+        
+        # Expected output
+        > Doing something...
+        > Done!
+
+  - type: textarea
+    id: config-example
+    attributes:
+      label: Configuration Example
+      description: If applicable, show how the flaase.yml would look.
+      render: yaml
+      placeholder: |
+        # New configuration option
+        new_feature:
+          enabled: true
+          option: value
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this feature to you?
+      options:
+        - Nice to have
+        - Would significantly improve my workflow
+        - Critical - blocking my use of Flaase
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add any other context, mockups, screenshots, or examples from other tools.
+
+  - type: dropdown
+    id: willing-to-pr
+    attributes:
+      label: Would you be willing to help implement this feature?
+      options:
+        - "Yes, I can implement this"
+        - "Yes, with guidance"
+        - "No, but I can help test"
+        - "No"

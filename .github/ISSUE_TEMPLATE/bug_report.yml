@@ -1,0 +1,134 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "status: needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below.
+        
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this bug hasn't been reported
+          required: true
+        - label: I am using the latest version of Flaase
+          required: true
+        - label: I have read the documentation
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: When I run `fl deploy`, the command fails with...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Step by step instructions to reproduce the behavior.
+      placeholder: |
+        1. Run `fl init`
+        2. Configure with type 'nextjs'
+        3. Run `fl deploy`
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: The deployment should complete successfully and the app should be accessible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: The command exits with error code 1 and displays "SSH connection failed".
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Please copy and paste any relevant log output. This will be automatically formatted into code.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Flaase Version
+      description: Output of `fl --version`
+      placeholder: flaase 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x64)
+        - Linux (ARM64)
+        - Windows (WSL2)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version
+      placeholder: Ubuntu 22.04 / macOS 14.0 / etc.
+
+  - type: dropdown
+    id: server-os
+    attributes:
+      label: Target Server OS
+      description: The OS of the VPS you're deploying to
+      options:
+        - Ubuntu 22.04
+        - Ubuntu 24.04
+        - Debian 11
+        - Debian 12
+        - Other Linux
+        - N/A
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `flaase.yml` file (redact sensitive info)
+      render: yaml
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or information that might help.
+
+  - type: dropdown
+    id: willing-to-pr
+    attributes:
+      label: Would you be willing to submit a PR to fix this?
+      options:
+        - "Yes"
+        - "Yes, with guidance"
+        - "No"
