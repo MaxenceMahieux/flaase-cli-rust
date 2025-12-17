@@ -1,0 +1,144 @@
+name: Welcome
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome-new-contributor:
+    name: Welcome New Contributor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const username = context.payload.sender.login;
+            const isIssue = context.eventName === 'issues';
+            const number = isIssue ? context.issue.number : context.payload.pull_request.number;
+            
+            // Check if this is their first contribution
+            const endpoint = isIssue ? 'issues' : 'pulls';
+            const { data: items } = await github.rest[endpoint].listForRepo({
+              owner,
+              repo,
+              creator: username,
+              state: 'all',
+            });
+            
+            // Filter out the current issue/PR
+            const previousContributions = items.filter(item => item.number !== number);
+            
+            if (previousContributions.length === 0) {
+              // First contribution - send welcome message
+              const welcomeMessage = isIssue
+                ? `👋 Welcome to Flaase, @${username}!
+            
+            Thank you for opening your first issue! We appreciate you taking the time to report this.
+            
+            Here's what happens next:
+            1. A maintainer will review your issue and add appropriate labels
+            2. We may ask for additional information if needed
+            3. Once triaged, the issue will be prioritized for resolution
+            
+            **While you wait:**
+            - Check out our [Contributing Guide](../blob/main/CONTRIBUTING.md)
+            - Join the discussion in [GitHub Discussions](../discussions)
+            - Browse [good first issues](../labels/good%20first%20issue) if you'd like to contribute
+            
+            Thanks for helping make Flaase better! 🚀`
+                : `👋 Welcome to Flaase, @${username}!
+            
+            Thank you for your first pull request! We're excited to have you as a contributor.
+            
+            Here's what happens next:
+            1. Our CI will run automated checks on your code
+            2. A maintainer will review your changes
+            3. We may request some changes or ask questions
+            4. Once approved, your PR will be merged!
+            
+            **PR Checklist:**
+            - [ ] Tests pass locally (\`cargo test\`)
+            - [ ] Code is formatted (\`cargo fmt\`)
+            - [ ] No clippy warnings (\`cargo clippy\`)
+            - [ ] Documentation updated (if applicable)
+            - [ ] CHANGELOG.md updated (for user-facing changes)
+            
+            Thanks for contributing to Flaase! 🎉`;
+              
+              if (isIssue) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: number,
+                  body: welcomeMessage,
+                });
+              } else {
+                await github.rest.pulls.createReview({
+                  owner,
+                  repo,
+                  pull_number: number,
+                  body: welcomeMessage,
+                  event: 'COMMENT',
+                });
+              }
+            }
+
+  auto-label:
+    name: Auto Label
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const title = issue.title.toLowerCase();
+            const body = (issue.body || '').toLowerCase();
+            const labels = [];
+            
+            // Add triage label to all new issues
+            labels.push('status: needs-triage');
+            
+            // Auto-detect type from title prefix
+            if (title.startsWith('[bug]')) {
+              labels.push('type: bug');
+            } else if (title.startsWith('[feature]')) {
+              labels.push('type: feature');
+            } else if (title.startsWith('[docs]')) {
+              labels.push('type: docs');
+            }
+            
+            // Auto-detect area from content
+            const areaKeywords = {
+              'area: cli': ['cli', 'command', 'argument', 'flag', 'clap'],
+              'area: docker': ['docker', 'container', 'dockerfile'],
+              'area: traefik': ['traefik', 'proxy', 'routing', 'ssl', 'tls', 'certificate'],
+              'area: ssh': ['ssh', 'connection', 'remote', 'rsync'],
+              'area: database': ['database', 'postgresql', 'mysql', 'mongodb', 'db'],
+              'area: backup': ['backup', 'restore', 's3'],
+              'area: runners': ['runner', 'github actions', 'gitlab', 'ci/cd'],
+            };
+            
+            for (const [label, keywords] of Object.entries(areaKeywords)) {
+              if (keywords.some(kw => title.includes(kw) || body.includes(kw))) {
+                labels.push(label);
+                break;  // Only add one area label
+              }
+            }
+            
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issue.number,
+                labels,
+              });
+            }

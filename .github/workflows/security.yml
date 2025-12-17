@@ -1,0 +1,128 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  push:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      
+      - name: Run cargo audit
+        run: cargo audit --json > audit-results.json
+        continue-on-error: true
+      
+      - name: Process audit results
+        id: audit
+        run: |
+          if [ -f audit-results.json ]; then
+            VULNS=$(jq '.vulnerabilities.count' audit-results.json)
+            echo "vulnerabilities=$VULNS" >> $GITHUB_OUTPUT
+            if [ "$VULNS" -gt 0 ]; then
+              echo "has_vulns=true" >> $GITHUB_OUTPUT
+              echo "## Security Audit Results" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Found $VULNS vulnerabilities" >> $GITHUB_STEP_SUMMARY
+              jq -r '.vulnerabilities.list[] | "- **\(.advisory.id)**: \(.advisory.title) (severity: \(.advisory.severity))"' audit-results.json >> $GITHUB_STEP_SUMMARY
+            else
+              echo "has_vulns=false" >> $GITHUB_OUTPUT
+              echo "## Security Audit Results" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+      
+      - name: Create issue for vulnerabilities
+        if: steps.audit.outputs.has_vulns == 'true' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const audit = JSON.parse(fs.readFileSync('audit-results.json', 'utf8'));
+            
+            // Check if issue already exists
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'type: security',
+              state: 'open',
+            });
+            
+            const existingIssue = issues.find(i => i.title.includes('Security Audit'));
+            
+            let body = `## Security Audit Report\n\n`;
+            body += `Found **${audit.vulnerabilities.count}** vulnerabilities.\n\n`;
+            body += `### Vulnerabilities\n\n`;
+            
+            for (const vuln of audit.vulnerabilities.list) {
+              body += `#### ${vuln.advisory.id}: ${vuln.advisory.title}\n`;
+              body += `- **Severity**: ${vuln.advisory.severity}\n`;
+              body += `- **Package**: ${vuln.package.name} ${vuln.package.version}\n`;
+              body += `- **More info**: https://rustsec.org/advisories/${vuln.advisory.id}\n\n`;
+            }
+            
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔒 Security Audit: Vulnerabilities Found',
+                body,
+                labels: ['type: security', 'priority: high'],
+              });
+            }
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          deny-licenses: LGPL-2.0, GPL-3.0
+
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check licenses and bans
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check
+          arguments: --all-features
+        continue-on-error: true  # Don't fail until deny.toml is configured

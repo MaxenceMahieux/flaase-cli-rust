@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'  # Pre-releases like v0.1.0-beta.1
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Create release and build info
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+      prerelease: ${{ steps.get_version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get version
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [[ "$VERSION" == *"-"* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Extract changelog for this version
+          if [ -f CHANGELOG.md ]; then
+            # Get content between this version and the previous one
+            awk '/^## \[v?${{ steps.get_version.outputs.version }}\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md > release_notes.md
+          else
+            echo "Release ${{ steps.get_version.outputs.version }}" > release_notes.md
+          fi
+      
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Flaase v${{ steps.get_version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ steps.get_version.outputs.prerelease }}
+          generate_release_notes: true
+
+  # Build binaries for each platform
+  build-release:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: flaase-linux-x64
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: flaase-linux-x64-musl
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: flaase-linux-arm64
+            archive: tar.gz
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: flaase-darwin-x64
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: flaase-darwin-arm64
+            archive: tar.gz
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get install -y musl-tools
+      
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: Prepare artifact (Unix)
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/flaase dist/
+          cp README.md LICENSE dist/
+          cd dist
+          tar -czvf ../${{ matrix.artifact }}.tar.gz *
+      
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact }}.tar.gz
+      
+      - name: Generate SHA256
+        run: |
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+      
+      - name: Upload SHA256
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact }}.tar.gz.sha256
+
+  # Update Homebrew formula (optional, for macOS)
+  homebrew:
+    name: Update Homebrew
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    if: ${{ needs.create-release.outputs.prerelease == 'false' }}
+    steps:
+      - name: Update Homebrew formula
+        run: |
+          echo "TODO: Implement Homebrew formula update"
+          echo "This would update the tap repository with the new version"
+
+  # Publish to crates.io
+  publish:
+    name: Publish to crates.io
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    if: ${{ needs.create-release.outputs.prerelease == 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true  # Don't fail if already published
+
+  # Announce release
+  announce:
+    name: Announce Release
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Announce on Discord
+        if: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\": \"🚀 **Flaase v${{ needs.create-release.outputs.version }}** has been released!\n\nDownload: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.create-release.outputs.version }}\"}" \
+            ${{ secrets.DISCORD_WEBHOOK }}
+        continue-on-error: true
