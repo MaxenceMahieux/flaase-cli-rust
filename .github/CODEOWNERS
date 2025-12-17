@@ -1,0 +1,40 @@
+# CODEOWNERS - Define code ownership for automatic review requests
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+*                       @MaxenceMahieux
+
+# Core functionality
+/src/core/              @MaxenceMahieux
+/src/main.rs            @MaxenceMahieux
+
+# CLI commands
+/src/cli/               @MaxenceMahieux
+
+# Provider implementations
+/src/providers/         @MaxenceMahieux
+
+# Transport layer (SSH, rsync)
+/src/transport/         @MaxenceMahieux
+
+# Templates
+/templates/             @MaxenceMahieux
+/src/templates/         @MaxenceMahieux
+
+# CI/CD configurations
+/.github/               @MaxenceMahieux
+/.github/workflows/     @MaxenceMahieux
+
+# Documentation
+/docs/                  @MaxenceMahieux
+*.md                    @MaxenceMahieux
+
+# Configuration files
+Cargo.toml              @MaxenceMahieux
+Cargo.lock              @MaxenceMahieux
+deny.toml               @MaxenceMahieux
+
+# Security-sensitive files require extra review
+/src/transport/ssh.rs   @MaxenceMahieux
+/src/backup/            @MaxenceMahieux
+SECURITY.md             @MaxenceMahieux
