@@ -10,7 +10,7 @@ body:
       value: |
         Thanks for suggesting a new feature! Please fill out the form below.
         
-        Before submitting, please check if a similar feature has already been requested in [Issues](https://github.com/themusic-space/flaase/issues) or [Discussions](https://github.com/themusic-space/flaase/discussions/categories/ideas).
+        Before submitting, please check if a similar feature has already been requested in [Issues](https://github.com/MaxenceMahieux/flaase/issues) or [Discussions](https://github.com/MaxenceMahieux/flaase/discussions/categories/ideas).
 
   - type: checkboxes
     id: checklist

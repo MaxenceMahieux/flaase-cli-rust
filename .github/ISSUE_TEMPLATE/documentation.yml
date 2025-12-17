@@ -49,7 +49,7 @@ body:
     attributes:
       label: Documentation Location
       description: Link to the documentation page or file path
-      placeholder: https://github.com/themusic-space/flaase/blob/main/docs/getting-started.md
+      placeholder: https://github.com/MaxenceMahieux/flaase/blob/main/docs/getting-started.md
     validations:
       required: true
 

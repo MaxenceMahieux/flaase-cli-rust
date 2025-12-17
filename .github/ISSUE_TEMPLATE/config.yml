@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security Vulnerability
-    url: https://github.com/themusic-space/flaase/security/advisories/new
+    url: https://github.com/MaxenceMahieux/flaase/security/advisories/new
     about: Report security vulnerabilities privately (do NOT create a public issue)
   - name: Discussions
-    url: https://github.com/themusic-space/flaase/discussions
+    url: https://github.com/MaxenceMahieux/flaase/discussions
     about: Ask questions and discuss ideas with the community
   - name: Feature Ideas
-    url: https://github.com/themusic-space/flaase/discussions/categories/ideas
+    url: https://github.com/MaxenceMahieux/flaase/discussions/categories/ideas
     about: Suggest and vote on new features
