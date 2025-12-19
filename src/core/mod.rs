@@ -1,6 +1,7 @@
 pub mod app_config;
 pub mod config;
 pub mod context;
+pub mod env;
 pub mod error;
 pub mod secrets;
 
@@ -10,5 +11,6 @@ pub use config::{
     FLAASE_TRAEFIK_DYNAMIC_PATH, FLAASE_TRAEFIK_PATH,
 };
 pub use context::{CommandOutput, ExecutionContext};
+pub use env::{EnvManager, EnvSource, EnvVar};
 pub use error::AppError;
 pub use secrets::SecretsManager;
