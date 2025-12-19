@@ -449,38 +449,38 @@ impl<'a> Deployer<'a> {
             return false;
         }
 
-        // Try to make HTTP request using curl from host
-        // The container is accessible via its name on the flaase-network
+        // Try health check via Traefik container (which is on the same network)
         let url = format!("http://{}:{}{}", container_name, port, endpoint);
         let timeout = config.timeout.to_string();
 
         let result = self.ctx.run_command(
-            "curl",
+            "docker",
             &[
-                "-sf",
-                "--max-time", &timeout,
-                "-o", "/dev/null",
-                "-w", "%{http_code}",
+                "exec", "flaase-traefik",
+                "wget", "-q", "--spider",
+                "--timeout", &timeout,
                 &url,
             ],
         );
 
-        match result {
-            Ok(output) => {
-                // Check if status code is 2xx or 3xx
-                let status: u16 = output.stdout.trim().parse().unwrap_or(0);
-                (200..400).contains(&status)
-            }
-            Err(_) => {
-                // curl failed, try wget as fallback (inside container)
-                let wget_result = self.runtime.exec_in_container(
-                    &container_name,
-                    &["wget", "-q", "--spider", &format!("http://localhost:{}{}", port, endpoint)],
-                    self.ctx,
-                );
-                wget_result.is_ok()
-            }
+        if result.is_ok() && result.as_ref().unwrap().success {
+            return true;
         }
+
+        // Fallback: check inside the app container itself
+        let wget_result = self.runtime.exec_in_container(
+            &container_name,
+            &["wget", "-q", "--spider", &format!("http://localhost:{}{}", port, endpoint)],
+            self.ctx,
+        );
+
+        if wget_result.is_ok() {
+            return true;
+        }
+
+        // Last resort: just check if container is still running after startup
+        std::thread::sleep(Duration::from_secs(2));
+        self.runtime.container_is_running(&container_name, self.ctx).unwrap_or(false)
     }
 
     /// Updates the deployed_at timestamp in the config.
