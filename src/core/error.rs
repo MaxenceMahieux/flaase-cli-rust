@@ -61,6 +61,9 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Deployment error: {0}")]
+    Deploy(String),
+
     #[error("Operation cancelled by user")]
     Cancelled,
 }

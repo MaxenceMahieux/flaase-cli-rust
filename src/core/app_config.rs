@@ -18,9 +18,13 @@ pub struct AppConfig {
     pub stack: Stack,
     pub domain: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheckConfig>,
     pub autodeploy: bool,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,12 +50,25 @@ impl AppConfig {
             ssh_key,
             stack,
             domain,
+            port: None,
             database,
             cache,
+            health_check: None,
             autodeploy,
             created_at: Utc::now(),
             deployed_at: None,
         }
+    }
+
+    /// Returns the effective port for this app.
+    /// Uses configured port or stack default.
+    pub fn effective_port(&self) -> u16 {
+        self.port.unwrap_or_else(|| self.stack.default_port())
+    }
+
+    /// Returns the health check configuration with defaults.
+    pub fn effective_health_check(&self) -> HealthCheckConfig {
+        self.health_check.clone().unwrap_or_default()
     }
 
     /// Returns the app directory path.
@@ -331,5 +348,51 @@ impl CacheType {
 impl fmt::Display for CacheType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.display_name())
+    }
+}
+
+/// Health check configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckConfig {
+    /// HTTP endpoint to check (default: "/health" or "/").
+    #[serde(default = "HealthCheckConfig::default_endpoint")]
+    pub endpoint: String,
+    /// Timeout in seconds for each check (default: 30).
+    #[serde(default = "HealthCheckConfig::default_timeout")]
+    pub timeout: u32,
+    /// Number of retries before marking as unhealthy (default: 3).
+    #[serde(default = "HealthCheckConfig::default_retries")]
+    pub retries: u32,
+    /// Interval between retries in seconds (default: 5).
+    #[serde(default = "HealthCheckConfig::default_interval")]
+    pub interval: u32,
+}
+
+impl HealthCheckConfig {
+    fn default_endpoint() -> String {
+        "/".to_string()
+    }
+
+    fn default_timeout() -> u32 {
+        30
+    }
+
+    fn default_retries() -> u32 {
+        3
+    }
+
+    fn default_interval() -> u32 {
+        5
+    }
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: Self::default_endpoint(),
+            timeout: Self::default_timeout(),
+            retries: Self::default_retries(),
+            interval: Self::default_interval(),
+        }
     }
 }
