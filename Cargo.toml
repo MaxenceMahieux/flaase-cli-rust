@@ -11,7 +11,7 @@ keywords = ["cli", "deployment", "vps", "docker", "traefik"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "fl"
+name = "flaase"
 path = "src/main.rs"
 
 [dependencies]
