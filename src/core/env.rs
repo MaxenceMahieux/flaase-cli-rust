@@ -122,15 +122,13 @@ impl EnvManager {
     }
 
     /// Saves user-defined environment variables.
+    /// Note: Does not filter out any keys to preserve backwards compatibility
+    /// with apps that have auto-generated vars in .env (before .env.auto existed).
     pub fn save_user(app_dir: &Path, vars: &BTreeMap<String, String>) -> Result<(), AppError> {
         let user_path = app_dir.join(".env");
 
         let mut content = String::new();
         for (key, value) in vars {
-            // Skip auto-generated keys
-            if Self::AUTO_KEYS.contains(&key.as_str()) {
-                continue;
-            }
             content.push_str(&format!("{}={}\n", key, Self::escape_value(value)));
         }
 

@@ -487,7 +487,7 @@ fn create_app(data: &AppInitData, ctx: &ExecutionContext) -> Result<(), AppError
             &data.name,
         );
 
-        SecretsManager::write_env_file(&config.env_path(), &env_vars)?;
+        SecretsManager::write_env_file(&config.auto_env_path(), &env_vars)?;
     }
 
     Ok(())

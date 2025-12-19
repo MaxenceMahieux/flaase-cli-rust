@@ -64,9 +64,14 @@ impl AppConfig {
         self.app_dir().join("config.yml")
     }
 
-    /// Returns the .env file path.
+    /// Returns the .env file path (user variables).
     pub fn env_path(&self) -> PathBuf {
         self.app_dir().join(".env")
+    }
+
+    /// Returns the .env.auto file path (auto-generated variables).
+    pub fn auto_env_path(&self) -> PathBuf {
+        self.app_dir().join(".env.auto")
     }
 
     /// Returns the .secrets file path.
