@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+pub mod app;
 pub mod server;
 
 /// Flaase CLI - Simplified VPS deployment

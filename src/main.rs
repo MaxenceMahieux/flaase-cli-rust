@@ -33,7 +33,7 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
         },
 
         Commands::Init => {
-            ui::info("App init not yet implemented");
+            flaase::cli::app::init(verbose)?;
             Ok(())
         }
 
