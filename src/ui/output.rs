@@ -44,3 +44,27 @@ pub fn error_with_hint(message: &str, hint: &str) {
     eprintln!("{} {}", style("✗").red(), message);
     eprintln!("  {} {}", style("→").dim(), hint);
 }
+
+/// Prints a step in progress (spinner style).
+pub fn step(message: &str) {
+    print!("{} {}... ", style("◦").cyan(), style(message).dim());
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+}
+
+/// Marks the current step as done.
+pub fn step_done() {
+    println!("{}", style("done").green());
+}
+
+/// Marks the current step as failed.
+pub fn step_failed() {
+    println!("{}", style("failed").red());
+}
+
+/// Prints a section header.
+pub fn section(title: &str) {
+    println!();
+    println!("{}", style(title).bold());
+    println!();
+}
