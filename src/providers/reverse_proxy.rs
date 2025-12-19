@@ -65,6 +65,18 @@ pub trait ReverseProxy {
 
     /// Writes the static configuration.
     fn write_static_config(&self, email: &str, ctx: &ExecutionContext) -> Result<(), AppError>;
+
+    /// Writes the dynamic configuration for an app.
+    fn write_app_config(
+        &self,
+        app_name: &str,
+        domain: &str,
+        container_port: u16,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError>;
+
+    /// Removes the dynamic configuration for an app.
+    fn remove_app_config(&self, app_name: &str, ctx: &ExecutionContext) -> Result<(), AppError>;
 }
 
 /// Traefik reverse proxy implementation.
@@ -290,6 +302,38 @@ impl ReverseProxy for TraefikProxy {
         let config = self.generate_static_config(email);
         let path = format!("{}/traefik.yml", FLAASE_TRAEFIK_PATH);
         ctx.write_file(&path, &config)
+    }
+
+    fn write_app_config(
+        &self,
+        app_name: &str,
+        domain: &str,
+        container_port: u16,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError> {
+        use crate::templates::traefik::{generate_app_config, AppDomain};
+
+        let domains = vec![AppDomain::new(domain, true)];
+        let config = generate_app_config(app_name, &domains, container_port);
+        let path = format!("{}/{}.yml", FLAASE_TRAEFIK_DYNAMIC_PATH, app_name);
+        ctx.write_file(&path, &config)
+    }
+
+    fn remove_app_config(&self, app_name: &str, ctx: &ExecutionContext) -> Result<(), AppError> {
+        let path = format!("{}/{}.yml", FLAASE_TRAEFIK_DYNAMIC_PATH, app_name);
+
+        if ctx.is_dry_run() {
+            crate::ui::info(&format!("[DRY-RUN] Remove {}", path));
+            return Ok(());
+        }
+
+        if std::path::Path::new(&path).exists() {
+            std::fs::remove_file(&path).map_err(|e| {
+                AppError::ReverseProxy(format!("Failed to remove app config: {}", e))
+            })?;
+        }
+
+        Ok(())
     }
 }
 

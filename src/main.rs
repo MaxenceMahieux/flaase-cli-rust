@@ -43,37 +43,37 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
         }
 
         Commands::Deploy { app } => {
-            ui::info(&format!("Deploy '{}' not yet implemented", app));
+            flaase::cli::deploy::deploy(&app, verbose)?;
             Ok(())
         }
 
         Commands::Update { app } => {
-            ui::info(&format!("Update '{}' not yet implemented", app));
+            flaase::cli::deploy::update(&app, verbose)?;
             Ok(())
         }
 
         Commands::Stop { app } => {
-            ui::info(&format!("Stop '{}' not yet implemented", app));
+            flaase::cli::deploy::stop(&app, verbose)?;
             Ok(())
         }
 
         Commands::Start { app } => {
-            ui::info(&format!("Start '{}' not yet implemented", app));
+            flaase::cli::deploy::start(&app, verbose)?;
             Ok(())
         }
 
         Commands::Restart { app } => {
-            ui::info(&format!("Restart '{}' not yet implemented", app));
+            flaase::cli::deploy::restart(&app, verbose)?;
             Ok(())
         }
 
         Commands::Destroy { app } => {
-            ui::info(&format!("Destroy '{}' not yet implemented", app));
+            flaase::cli::deploy::destroy(&app, verbose)?;
             Ok(())
         }
 
-        Commands::Logs { app, .. } => {
-            ui::info(&format!("Logs '{}' not yet implemented", app));
+        Commands::Logs { app, follow, lines } => {
+            flaase::cli::logs::logs(&app, follow, lines, verbose)?;
             Ok(())
         }
 

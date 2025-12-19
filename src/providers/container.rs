@@ -61,6 +61,42 @@ pub trait ContainerRuntime {
 
     /// Checks if a network exists.
     fn network_exists(&self, name: &str, ctx: &ExecutionContext) -> Result<bool, AppError>;
+
+    /// Builds a Docker image from a Dockerfile.
+    fn build_image(
+        &self,
+        tag: &str,
+        context_dir: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError>;
+
+    /// Checks if a port is available on the host.
+    fn is_port_available(&self, port: u16, ctx: &ExecutionContext) -> Result<bool, AppError>;
+
+    /// Gets logs from a container.
+    fn get_logs(&self, name: &str, lines: u32, ctx: &ExecutionContext) -> Result<String, AppError>;
+
+    /// Pulls a Docker image.
+    fn pull_image(&self, image: &str, ctx: &ExecutionContext) -> Result<(), AppError>;
+
+    /// Finds an available port starting from the given port.
+    fn find_available_port(&self, start: u16, ctx: &ExecutionContext) -> Result<u16, AppError>;
+
+    /// Connects a container to an additional network.
+    fn connect_network(
+        &self,
+        container: &str,
+        network: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError>;
+
+    /// Executes a command inside a running container.
+    fn exec_in_container(
+        &self,
+        container: &str,
+        command: &[&str],
+        ctx: &ExecutionContext,
+    ) -> Result<String, AppError>;
 }
 
 /// Configuration for running a container.
@@ -71,6 +107,7 @@ pub struct ContainerConfig {
     pub ports: Vec<PortMapping>,
     pub volumes: Vec<VolumeMapping>,
     pub environment: Vec<(String, String)>,
+    pub env_files: Vec<String>,
     pub network: Option<String>,
     pub restart_policy: RestartPolicy,
     pub labels: Vec<(String, String)>,
@@ -85,6 +122,7 @@ impl ContainerConfig {
             ports: Vec::new(),
             volumes: Vec::new(),
             environment: Vec::new(),
+            env_files: Vec::new(),
             network: None,
             restart_policy: RestartPolicy::UnlessStopped,
             labels: Vec::new(),
@@ -117,6 +155,11 @@ impl ContainerConfig {
 
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.environment.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn env_file(mut self, path: &str) -> Self {
+        self.env_files.push(path.to_string());
         self
     }
 
@@ -325,6 +368,12 @@ impl ContainerRuntime for DockerRuntime {
             args.push(env);
         }
 
+        // Environment files
+        for env_file in &config.env_files {
+            args.push("--env-file");
+            args.push(env_file);
+        }
+
         // Labels
         for label in &label_mappings {
             args.push("-l");
@@ -397,6 +446,133 @@ impl ContainerRuntime for DockerRuntime {
             ],
         )?;
         Ok(!output.stdout.trim().is_empty())
+    }
+
+    fn build_image(
+        &self,
+        tag: &str,
+        context_dir: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError> {
+        ctx.run_command_streaming("docker", &["build", "-t", tag, context_dir])?
+            .ensure_success(&format!("Failed to build image '{}'", tag))?;
+        Ok(())
+    }
+
+    fn is_port_available(&self, port: u16, ctx: &ExecutionContext) -> Result<bool, AppError> {
+        // Check if any container is using this port
+        let output = ctx.run_command(
+            "docker",
+            &[
+                "ps",
+                "--format",
+                "{{.Ports}}",
+            ],
+        )?;
+
+        let port_str = format!(":{}", port);
+        let port_mapping = format!("0.0.0.0:{}", port);
+
+        for line in output.stdout.lines() {
+            if line.contains(&port_str) || line.contains(&port_mapping) {
+                return Ok(false);
+            }
+        }
+
+        // Also check if the port is bound by a non-Docker process
+        let ss_output = ctx.run_command("ss", &["-tuln"]);
+        if let Ok(ss) = ss_output {
+            let port_pattern = format!(":{} ", port);
+            let port_pattern2 = format!(":{}\n", port);
+            if ss.stdout.contains(&port_pattern) || ss.stdout.contains(&port_pattern2) {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn get_logs(&self, name: &str, lines: u32, ctx: &ExecutionContext) -> Result<String, AppError> {
+        let lines_str = lines.to_string();
+        let output = ctx.run_command("docker", &["logs", "--tail", &lines_str, name])?;
+        Ok(format!("{}\n{}", output.stdout, output.stderr))
+    }
+
+    fn pull_image(&self, image: &str, ctx: &ExecutionContext) -> Result<(), AppError> {
+        ctx.run_command_streaming("docker", &["pull", image])?
+            .ensure_success(&format!("Failed to pull image '{}'", image))?;
+        Ok(())
+    }
+
+    fn find_available_port(&self, start: u16, ctx: &ExecutionContext) -> Result<u16, AppError> {
+        let mut port = start;
+        let max_attempts = 100;
+
+        for _ in 0..max_attempts {
+            if self.is_port_available(port, ctx)? {
+                return Ok(port);
+            }
+            port += 1;
+        }
+
+        Err(AppError::Config(format!(
+            "Could not find available port starting from {}",
+            start
+        )))
+    }
+
+    fn connect_network(
+        &self,
+        container: &str,
+        network: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError> {
+        // Check if already connected
+        let output = ctx.run_command(
+            "docker",
+            &["inspect", container, "--format", "{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}"],
+        )?;
+
+        // Check if network exists, create if not
+        if !self.network_exists(network, ctx)? {
+            self.create_network(network, ctx)?;
+        }
+
+        // Get network ID to check if already connected
+        let network_id = ctx.run_command("docker", &["network", "inspect", network, "-f", "{{.Id}}"])?;
+
+        if output.stdout.contains(&network_id.stdout[..12]) {
+            return Ok(()); // Already connected
+        }
+
+        ctx.run_command("docker", &["network", "connect", network, container])?
+            .ensure_success(&format!(
+                "Failed to connect container '{}' to network '{}'",
+                container, network
+            ))?;
+
+        Ok(())
+    }
+
+    fn exec_in_container(
+        &self,
+        container: &str,
+        command: &[&str],
+        ctx: &ExecutionContext,
+    ) -> Result<String, AppError> {
+        let mut args = vec!["exec", container];
+        args.extend(command);
+
+        let output = ctx.run_command("docker", &args)?;
+
+        if output.success {
+            Ok(output.stdout)
+        } else {
+            Err(AppError::Docker(format!(
+                "Command failed in container: {}",
+                output.stderr
+            )))
+        }
     }
 }
 

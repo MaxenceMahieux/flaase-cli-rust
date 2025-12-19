@@ -6,7 +6,10 @@ pub mod progress;
 pub use components::{Confirm, Select, TextInput};
 
 // Re-export output utilities
-pub use output::{error, error_with_hint, header, info, success, url, warning};
+pub use output::{
+    error, error_with_hint, header, info, section, step, step_done, step_failed, success, url,
+    warning,
+};
 
 // Re-export progress utilities
 pub use progress::{MultiProgress, ProgressBar};
