@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+pub mod server;
+
 /// Flaase CLI - Simplified VPS deployment
 #[derive(Parser)]
 #[command(
@@ -105,7 +107,11 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum ServerCommands {
     /// Initialize server for deployments
-    Init,
+    Init {
+        /// Run without making any changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Show server health status
     Status,

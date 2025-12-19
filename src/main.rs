@@ -7,7 +7,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(command) => run_command(command),
+        Some(command) => run_command(command, cli.verbose),
         None => {
             ui::header();
             println!(
@@ -19,11 +19,11 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_command(command: Commands) -> Result<()> {
+fn run_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
         Commands::Server { command } => match command {
-            ServerCommands::Init => {
-                ui::info("Server init not yet implemented");
+            ServerCommands::Init { dry_run } => {
+                flaase::cli::server::init(dry_run, verbose)?;
                 Ok(())
             }
             ServerCommands::Status => {
