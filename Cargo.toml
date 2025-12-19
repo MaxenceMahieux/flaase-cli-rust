@@ -40,6 +40,12 @@ indicatif = "0.17"
 thiserror = "2.0"
 anyhow = "1.0"
 
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# System
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3.14"
 
