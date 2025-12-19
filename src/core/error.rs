@@ -43,6 +43,14 @@ pub enum AppError {
     #[error("User management error: {0}")]
     UserManagement(String),
 
+    // SSH errors
+    #[error("SSH error: {0}")]
+    Ssh(String),
+
+    // Validation errors
+    #[error("Validation error: {0}")]
+    Validation(String),
+
     // Other errors
     #[error("Git error: {0}")]
     Git(String),
