@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod app;
+pub mod env;
 pub mod server;
 
 /// Flaase CLI - Simplified VPS deployment
@@ -124,6 +125,10 @@ pub enum EnvCommands {
     List {
         /// Name of the app
         app: String,
+
+        /// Show actual values (requires confirmation)
+        #[arg(long)]
+        show: bool,
     },
 
     /// Set environment variable(s)
@@ -143,6 +148,12 @@ pub enum EnvCommands {
 
         /// Key to remove
         key: String,
+    },
+
+    /// Edit environment variables in your editor
+    Edit {
+        /// Name of the app
+        app: String,
     },
 }
 

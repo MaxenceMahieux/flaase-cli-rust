@@ -78,16 +78,20 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
         }
 
         Commands::Env { command } => match command {
-            EnvCommands::List { app } => {
-                ui::info(&format!("Env list '{}' not yet implemented", app));
+            EnvCommands::List { app, show } => {
+                flaase::cli::env::list(&app, show)?;
                 Ok(())
             }
-            EnvCommands::Set { app, .. } => {
-                ui::info(&format!("Env set '{}' not yet implemented", app));
+            EnvCommands::Set { app, vars } => {
+                flaase::cli::env::set(&app, &vars)?;
                 Ok(())
             }
-            EnvCommands::Remove { app, .. } => {
-                ui::info(&format!("Env remove '{}' not yet implemented", app));
+            EnvCommands::Remove { app, key } => {
+                flaase::cli::env::remove(&app, &key)?;
+                Ok(())
+            }
+            EnvCommands::Edit { app } => {
+                flaase::cli::env::edit(&app)?;
                 Ok(())
             }
         },
