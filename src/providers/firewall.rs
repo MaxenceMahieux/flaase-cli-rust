@@ -137,8 +137,10 @@ impl Firewall for UfwFirewall {
     }
 
     fn is_installed(&self, ctx: &ExecutionContext) -> Result<bool, AppError> {
-        let output = ctx.run_command("which", &["ufw"])?;
-        Ok(output.success)
+        match ctx.run_command("which", &["ufw"]) {
+            Ok(output) => Ok(output.success),
+            Err(_) => Ok(false),
+        }
     }
 
     fn install(

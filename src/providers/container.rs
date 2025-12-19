@@ -203,8 +203,10 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn is_installed(&self, ctx: &ExecutionContext) -> Result<bool, AppError> {
-        let output = ctx.run_command("docker", &["--version"])?;
-        Ok(output.success)
+        match ctx.run_command("which", &["docker"]) {
+            Ok(output) => Ok(output.success),
+            Err(_) => Ok(false),
+        }
     }
 
     fn get_version(&self, ctx: &ExecutionContext) -> Result<String, AppError> {
