@@ -38,7 +38,7 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
         }
 
         Commands::Status => {
-            ui::info("Status not yet implemented");
+            flaase::cli::status::status(verbose)?;
             Ok(())
         }
 
