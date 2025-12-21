@@ -1,6 +1,6 @@
 [package]
 name = "flaase"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 authors = ["Maxence Mahieux"]
 description = "A CLI tool for simplified VPS deployment"
