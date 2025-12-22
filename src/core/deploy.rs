@@ -494,37 +494,46 @@ impl<'a> Deployer<'a> {
         config.save()
     }
 
-    /// Stops all containers for this app.
+    /// Stops the web container (database and cache stay running).
     pub fn stop(&self) -> Result<(), AppError> {
-        let containers = [
-            self.web_container_name(),
-            self.db_container_name(),
-            self.cache_container_name(),
-        ];
+        let container = self.web_container_name();
 
-        for container in &containers {
-            if self.runtime.container_is_running(container, self.ctx)? {
-                self.runtime.stop_container(container, self.ctx)?;
-            }
+        if self.runtime.container_is_running(&container, self.ctx)? {
+            self.runtime.stop_container(&container, self.ctx)?;
         }
+
+        // Update Traefik to show 503 maintenance page
+        self.proxy.write_maintenance_config(&self.config.name, self.ctx)?;
 
         Ok(())
     }
 
-    /// Starts all containers for this app.
+    /// Starts the web container and runs health check.
     pub fn start(&self) -> Result<(), AppError> {
-        // Start database if configured
+        // Ensure database is running if configured
         if self.config.database.is_some() {
-            self.start_database()?;
+            let db_container = self.db_container_name();
+            if !self.runtime.container_is_running(&db_container, self.ctx)? {
+                self.start_database()?;
+            }
         }
 
-        // Start cache if configured
+        // Ensure cache is running if configured
         if self.config.cache.is_some() {
-            self.start_cache()?;
+            let cache_container = self.cache_container_name();
+            if !self.runtime.container_is_running(&cache_container, self.ctx)? {
+                self.start_cache()?;
+            }
         }
 
-        // Start app
+        // Start app container
         self.start_app()?;
+
+        // Restore normal Traefik routing (remove maintenance page)
+        self.configure_routing()?;
+
+        // Run health check
+        self.health_check()?;
 
         Ok(())
     }
