@@ -5,6 +5,7 @@ pub mod deploy;
 pub mod env;
 pub mod logs;
 pub mod server;
+pub mod server_status;
 pub mod status;
 
 /// Flaase CLI - Simplified VPS deployment

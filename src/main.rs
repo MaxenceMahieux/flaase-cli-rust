@@ -27,7 +27,10 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
                 Ok(())
             }
             ServerCommands::Status => {
-                ui::info("Server status not yet implemented");
+                let exit_code = flaase::cli::server_status::status(verbose)?;
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
                 Ok(())
             }
         },
