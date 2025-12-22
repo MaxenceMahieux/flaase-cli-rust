@@ -59,62 +59,92 @@ pub fn deploy(app_name: &str, verbose: bool) -> Result<(), AppError> {
 
 /// Stops an app.
 pub fn stop(app_name: &str, verbose: bool) -> Result<(), AppError> {
-    ui::header();
-
+    // Load app config
     let config = AppConfig::load(app_name)?;
     let ctx = ExecutionContext::new(false, verbose);
     let runtime = create_container_runtime();
     let proxy = create_reverse_proxy();
 
-    ui::info(&format!("Stopping {}...", app_name));
+    let spinner = ui::ProgressBar::spinner(&format!("Stopping {}", app_name));
 
     let deployer = Deployer::new(&config, runtime.as_ref(), proxy.as_ref(), &ctx);
-    deployer.stop()?;
 
-    ui::success(&format!("App '{}' stopped", app_name));
-
-    Ok(())
+    match deployer.stop() {
+        Ok(()) => {
+            spinner.finish("stopped");
+            println!();
+            ui::success("App stopped");
+            Ok(())
+        }
+        Err(e) => {
+            spinner.finish("failed");
+            Err(e)
+        }
+    }
 }
 
 /// Starts a stopped app.
 pub fn start(app_name: &str, verbose: bool) -> Result<(), AppError> {
-    ui::header();
-
+    // Load app config
     let config = AppConfig::load(app_name)?;
     let ctx = ExecutionContext::new(false, verbose);
     let runtime = create_container_runtime();
     let proxy = create_reverse_proxy();
 
-    ui::info(&format!("Starting {}...", app_name));
+    let spinner = ui::ProgressBar::spinner(&format!("Starting {}", app_name));
 
     let deployer = Deployer::new(&config, runtime.as_ref(), proxy.as_ref(), &ctx);
-    deployer.start()?;
 
-    ui::success(&format!("App '{}' started", app_name));
-    ui::url(&format!("https://{}", config.domain));
-
-    Ok(())
+    match deployer.start() {
+        Ok(()) => {
+            spinner.finish("running");
+            println!();
+            ui::success(&format!("App running at https://{}", config.domain));
+            Ok(())
+        }
+        Err(e) => {
+            spinner.finish("failed");
+            println!();
+            ui::error(&format!("Failed to start: {}", e));
+            Err(e)
+        }
+    }
 }
 
 /// Restarts an app.
 pub fn restart(app_name: &str, verbose: bool) -> Result<(), AppError> {
-    ui::header();
-
+    // Load app config
     let config = AppConfig::load(app_name)?;
     let ctx = ExecutionContext::new(false, verbose);
     let runtime = create_container_runtime();
     let proxy = create_reverse_proxy();
 
-    ui::info(&format!("Restarting {}...", app_name));
+    let spinner = ui::ProgressBar::spinner(&format!("Restarting {}", app_name));
 
     let deployer = Deployer::new(&config, runtime.as_ref(), proxy.as_ref(), &ctx);
-    deployer.stop()?;
-    deployer.start()?;
 
-    ui::success(&format!("App '{}' restarted", app_name));
-    ui::url(&format!("https://{}", config.domain));
+    // Stop without maintenance page (we're restarting immediately)
+    if let Err(e) = runtime.stop_container(&format!("flaase-{}-web", app_name), &ctx) {
+        // Container might not be running, continue anyway
+        if verbose {
+            ui::warning(&format!("Stop warning: {}", e));
+        }
+    }
 
-    Ok(())
+    match deployer.start() {
+        Ok(()) => {
+            spinner.finish("restarted");
+            println!();
+            ui::success(&format!("App restarted at https://{}", config.domain));
+            Ok(())
+        }
+        Err(e) => {
+            spinner.finish("failed");
+            println!();
+            ui::error(&format!("Failed to restart: {}", e));
+            Err(e)
+        }
+    }
 }
 
 /// Destroys an app completely.

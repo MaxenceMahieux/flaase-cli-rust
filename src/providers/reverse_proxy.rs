@@ -77,6 +77,10 @@ pub trait ReverseProxy {
 
     /// Removes the dynamic configuration for an app.
     fn remove_app_config(&self, app_name: &str, ctx: &ExecutionContext) -> Result<(), AppError>;
+
+    /// Writes a maintenance configuration (503 page) for an app.
+    fn write_maintenance_config(&self, app_name: &str, ctx: &ExecutionContext)
+        -> Result<(), AppError>;
 }
 
 /// Traefik reverse proxy implementation.
@@ -329,6 +333,18 @@ impl ReverseProxy for TraefikProxy {
         }
 
         Ok(())
+    }
+
+    fn write_maintenance_config(
+        &self,
+        app_name: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError> {
+        use crate::templates::traefik::generate_maintenance_config;
+
+        let config = generate_maintenance_config(app_name);
+        let path = format!("{}/{}.yml", FLAASE_TRAEFIK_DYNAMIC_PATH, app_name);
+        ctx.write_file(&path, &config)
     }
 }
 
