@@ -18,6 +18,9 @@ pub struct AppSecrets {
     pub database: Option<DatabaseSecrets>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheSecrets>,
+    /// Authentication secrets per domain (domain -> credentials)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub auth: HashMap<String, AuthSecret>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +33,13 @@ pub struct DatabaseSecrets {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheSecrets {
     pub password: String,
+}
+
+/// Authentication secrets for a domain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthSecret {
+    /// Htpasswd-compatible hash (bcrypt format)
+    pub password_hash: String,
 }
 
 /// Manager for generating and storing secrets securely.
@@ -73,6 +83,29 @@ impl SecretsManager {
     pub fn generate_cache_secrets(_cache_type: CacheType) -> CacheSecrets {
         CacheSecrets {
             password: Self::generate_password(32),
+        }
+    }
+
+    /// Generates auth secret with bcrypt-hashed password.
+    /// Returns the htpasswd-compatible hash in the format: username:$2y$...
+    pub fn generate_auth_secret(username: &str, password: &str) -> Result<AuthSecret, AppError> {
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+            .map_err(|e| AppError::Config(format!("Failed to hash password: {}", e)))?;
+
+        // Traefik expects htpasswd format: username:hash
+        // But we store just the hash, username is in config
+        Ok(AuthSecret {
+            password_hash: format!("{}:{}", username, hash),
+        })
+    }
+
+    /// Validates a password against a stored auth secret.
+    pub fn verify_auth_password(password: &str, auth_secret: &AuthSecret) -> bool {
+        // Extract hash from "username:hash" format
+        if let Some(hash) = auth_secret.password_hash.split(':').nth(1) {
+            bcrypt::verify(password, hash).unwrap_or(false)
+        } else {
+            false
         }
     }
 

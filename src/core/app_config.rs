@@ -396,3 +396,39 @@ impl Default for HealthCheckConfig {
         }
     }
 }
+
+/// Domain configuration with optional authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainConfig {
+    pub domain: String,
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<DomainAuth>,
+}
+
+impl DomainConfig {
+    pub fn new(domain: &str, primary: bool) -> Self {
+        Self {
+            domain: domain.to_string(),
+            primary,
+            auth: None,
+        }
+    }
+
+    pub fn with_auth(mut self, username: &str) -> Self {
+        self.auth = Some(DomainAuth {
+            enabled: true,
+            username: username.to_string(),
+        });
+        self
+    }
+}
+
+/// Domain authentication configuration.
+/// Password hash is stored in the secrets file, not here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainAuth {
+    pub enabled: bool,
+    pub username: String,
+}
