@@ -47,6 +47,9 @@ anyhow = "1.0"
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Password hashing (for HTTP Basic Auth)
+bcrypt = "0.16"
+
 # System
 libc = "0.2"
 
