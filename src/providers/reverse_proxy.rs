@@ -75,6 +75,16 @@ pub trait ReverseProxy {
         ctx: &ExecutionContext,
     ) -> Result<(), AppError>;
 
+    /// Writes the dynamic configuration for an app with auth support.
+    fn write_app_config_with_auth(
+        &self,
+        app_name: &str,
+        domain: &str,
+        container_port: u16,
+        auth_htpasswd: Option<&str>,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError>;
+
     /// Removes the dynamic configuration for an app.
     fn remove_app_config(&self, app_name: &str, ctx: &ExecutionContext) -> Result<(), AppError>;
 
@@ -310,9 +320,25 @@ impl ReverseProxy for TraefikProxy {
         container_port: u16,
         ctx: &ExecutionContext,
     ) -> Result<(), AppError> {
+        self.write_app_config_with_auth(app_name, domain, container_port, None, ctx)
+    }
+
+    fn write_app_config_with_auth(
+        &self,
+        app_name: &str,
+        domain: &str,
+        container_port: u16,
+        auth_htpasswd: Option<&str>,
+        ctx: &ExecutionContext,
+    ) -> Result<(), AppError> {
         use crate::templates::traefik::{generate_app_config, AppDomain};
 
-        let domains = vec![AppDomain::new(domain, true)];
+        let mut app_domain = AppDomain::new(domain, true);
+        if let Some(htpasswd) = auth_htpasswd {
+            app_domain = app_domain.with_auth(htpasswd);
+        }
+
+        let domains = vec![app_domain];
         let config = generate_app_config(app_name, &domains, container_port);
         let path = format!("{}/{}.yml", FLAASE_TRAEFIK_DYNAMIC_PATH, app_name);
         ctx.write_file(&path, &config)
