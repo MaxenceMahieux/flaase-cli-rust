@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use flaase::cli::{AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, ServerCommands};
+use flaase::cli::{
+    AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, ServerCommands,
+};
 use flaase::ui;
 
 fn main() -> Result<()> {
@@ -125,6 +127,35 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
             }
             AutodeployCommands::Status { app } => {
                 ui::info(&format!("Autodeploy status '{}' not yet implemented", app));
+                Ok(())
+            }
+        },
+
+        Commands::Auth { command } => match command {
+            AuthCommands::List { app } => {
+                flaase::cli::auth::list(&app)?;
+                Ok(())
+            }
+            AuthCommands::Add {
+                app,
+                domain,
+                user,
+                password,
+            } => {
+                flaase::cli::auth::add(&app, &domain, user.as_deref(), password.as_deref())?;
+                Ok(())
+            }
+            AuthCommands::Remove { app, domain } => {
+                flaase::cli::auth::remove(&app, &domain)?;
+                Ok(())
+            }
+            AuthCommands::Update {
+                app,
+                domain,
+                user,
+                password,
+            } => {
+                flaase::cli::auth::update(&app, &domain, user.as_deref(), password.as_deref())?;
                 Ok(())
             }
         },

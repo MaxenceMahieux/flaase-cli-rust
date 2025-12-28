@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod app;
+pub mod auth;
 pub mod deploy;
 pub mod env;
 pub mod logs;
@@ -108,6 +109,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: AutodeployCommands,
     },
+
+    /// Manage HTTP Basic Auth for domains
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -206,5 +213,57 @@ pub enum AutodeployCommands {
     Status {
         /// Name of the app
         app: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuthCommands {
+    /// List auth status for all domains
+    List {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Add Basic Auth to a domain
+    Add {
+        /// Name of the app
+        app: String,
+
+        /// Domain to protect
+        domain: String,
+
+        /// Username (interactive if not provided)
+        #[arg(long, short)]
+        user: Option<String>,
+
+        /// Password (interactive if not provided)
+        #[arg(long, short)]
+        password: Option<String>,
+    },
+
+    /// Remove Basic Auth from a domain
+    Remove {
+        /// Name of the app
+        app: String,
+
+        /// Domain to unprotect
+        domain: String,
+    },
+
+    /// Update credentials for a domain
+    Update {
+        /// Name of the app
+        app: String,
+
+        /// Domain to update
+        domain: String,
+
+        /// New username (interactive if not provided)
+        #[arg(long, short)]
+        user: Option<String>,
+
+        /// New password (interactive if not provided)
+        #[arg(long, short)]
+        password: Option<String>,
     },
 }
