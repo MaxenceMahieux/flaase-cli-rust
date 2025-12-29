@@ -92,10 +92,12 @@ impl SecretsManager {
         let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
             .map_err(|e| AppError::Config(format!("Failed to hash password: {}", e)))?;
 
-        // Traefik expects htpasswd format: username:hash
-        // But we store just the hash, username is in config
+        // Rust bcrypt generates $2b$ but htpasswd/Traefik expects $2y$
+        // They are functionally identical, just different identifiers
+        let htpasswd_hash = hash.replace("$2b$", "$2y$");
+
         Ok(AuthSecret {
-            password_hash: format!("{}:{}", username, hash),
+            password_hash: format!("{}:{}", username, htpasswd_hash),
         })
     }
 
