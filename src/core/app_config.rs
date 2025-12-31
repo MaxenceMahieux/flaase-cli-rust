@@ -26,6 +26,9 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheckConfig>,
     pub autodeploy: bool,
+    /// Detailed autodeploy configuration (webhook settings).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autodeploy_config: Option<AutodeployConfig>,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed_at: Option<DateTime<Utc>>,
@@ -55,6 +58,7 @@ impl AppConfig {
             cache,
             health_check: None,
             autodeploy,
+            autodeploy_config: None,
             created_at: Utc::now(),
             deployed_at: None,
         }
@@ -104,6 +108,11 @@ impl AppConfig {
     /// Returns the data directory path.
     pub fn data_path(&self) -> PathBuf {
         self.app_dir().join("data")
+    }
+
+    /// Returns the deployments history file path.
+    pub fn deployments_path(&self) -> PathBuf {
+        self.app_dir().join("deployments.json")
     }
 
     /// Loads an app configuration from disk.
@@ -431,4 +440,35 @@ impl DomainConfig {
 pub struct DomainAuth {
     pub enabled: bool,
     pub username: String,
+}
+
+/// Autodeploy configuration for an app.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutodeployConfig {
+    /// Whether autodeploy is enabled.
+    pub enabled: bool,
+    /// Branch to watch for deployments.
+    #[serde(default = "AutodeployConfig::default_branch")]
+    pub branch: String,
+    /// Webhook endpoint path (unique per app).
+    pub webhook_path: String,
+}
+
+impl AutodeployConfig {
+    fn default_branch() -> String {
+        "main".to_string()
+    }
+
+    pub fn new(webhook_path: &str) -> Self {
+        Self {
+            enabled: true,
+            branch: Self::default_branch(),
+            webhook_path: webhook_path.to_string(),
+        }
+    }
+
+    pub fn with_branch(mut self, branch: &str) -> Self {
+        self.branch = branch.to_string();
+        self
+    }
 }

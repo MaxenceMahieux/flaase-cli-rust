@@ -21,6 +21,9 @@ pub struct AppSecrets {
     /// Authentication secrets per domain (domain -> credentials)
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub auth: HashMap<String, AuthSecret>,
+    /// Webhook secret for autodeploy
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookSecret>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +43,13 @@ pub struct CacheSecrets {
 pub struct AuthSecret {
     /// Htpasswd-compatible hash (bcrypt format)
     pub password_hash: String,
+}
+
+/// Webhook secrets for autodeploy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookSecret {
+    /// Secret token for GitHub webhook signature verification (HMAC-SHA256).
+    pub secret: String,
 }
 
 /// Manager for generating and storing secrets securely.
@@ -83,6 +93,13 @@ impl SecretsManager {
     pub fn generate_cache_secrets(_cache_type: CacheType) -> CacheSecrets {
         CacheSecrets {
             password: Self::generate_password(32),
+        }
+    }
+
+    /// Generates a webhook secret for autodeploy.
+    pub fn generate_webhook_secret() -> WebhookSecret {
+        WebhookSecret {
+            secret: Self::generate_password(40), // 40 chars for webhook secret
         }
     }
 

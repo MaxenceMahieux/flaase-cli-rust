@@ -5,6 +5,7 @@ pub mod package_manager;
 pub mod reverse_proxy;
 pub mod ssh;
 pub mod system;
+pub mod webhook;
 
 pub use container::{create_container_runtime, ContainerConfig, ContainerRuntime, DockerRuntime};
 pub use firewall::{
@@ -15,3 +16,4 @@ pub use package_manager::{create_package_manager, AptManager, PackageManager};
 pub use reverse_proxy::{create_reverse_proxy, ReverseProxy, TraefikProxy};
 pub use ssh::{SshKeyInfo, SshKeyType, SshProvider};
 pub use system::{SystemProvider, UserInfo, UserManager};
+pub use webhook::{GitHubPushEvent, WebhookProvider, FLAASE_WEBHOOK_PATH};
