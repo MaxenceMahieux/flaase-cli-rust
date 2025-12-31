@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use flaase::cli::{
     AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, ServerCommands,
+    WebhookCommands,
 };
 use flaase::ui;
 
@@ -117,16 +118,28 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
         },
 
         Commands::Autodeploy { command } => match command {
-            AutodeployCommands::Enable { app } => {
-                ui::info(&format!("Autodeploy enable '{}' not yet implemented", app));
+            AutodeployCommands::Enable { app, branch } => {
+                flaase::cli::autodeploy::enable(&app, branch.as_deref())?;
                 Ok(())
             }
             AutodeployCommands::Disable { app } => {
-                ui::info(&format!("Autodeploy disable '{}' not yet implemented", app));
+                flaase::cli::autodeploy::disable(&app)?;
                 Ok(())
             }
             AutodeployCommands::Status { app } => {
-                ui::info(&format!("Autodeploy status '{}' not yet implemented", app));
+                flaase::cli::autodeploy::status(&app)?;
+                Ok(())
+            }
+            AutodeployCommands::Secret { app } => {
+                flaase::cli::autodeploy::secret(&app)?;
+                Ok(())
+            }
+            AutodeployCommands::Regenerate { app } => {
+                flaase::cli::autodeploy::regenerate(&app)?;
+                Ok(())
+            }
+            AutodeployCommands::Logs { app, limit } => {
+                flaase::cli::autodeploy::logs(&app, limit)?;
                 Ok(())
             }
         },
@@ -156,6 +169,25 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
                 password,
             } => {
                 flaase::cli::auth::update(&app, &domain, user.as_deref(), password.as_deref())?;
+                Ok(())
+            }
+        },
+
+        Commands::Webhook { command } => match command {
+            WebhookCommands::Serve { port, host } => {
+                flaase::cli::webhook::serve(&host, port, verbose)?;
+                Ok(())
+            }
+            WebhookCommands::Install => {
+                flaase::cli::webhook::install()?;
+                Ok(())
+            }
+            WebhookCommands::Uninstall => {
+                flaase::cli::webhook::uninstall()?;
+                Ok(())
+            }
+            WebhookCommands::Status => {
+                flaase::cli::webhook::status()?;
                 Ok(())
             }
         },
