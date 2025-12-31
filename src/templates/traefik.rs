@@ -27,14 +27,15 @@ pub fn generate_app_config(app_name: &str, domains: &[AppDomain], container_port
 
         // Generate auth middleware if needed
         if let Some(auth) = &domain.auth {
+            // Use single quotes to avoid YAML escaping issues with $ in bcrypt hashes
             auth_middlewares.push_str(&format!(
                 r#"    {middleware_name}:
       basicAuth:
         users:
-          - "{htpasswd_line}"
+          - '{htpasswd_line}'
 "#,
                 middleware_name = auth_middleware_name,
-                htpasswd_line = auth.htpasswd_line.replace('$', "$$") // Escape $ for YAML
+                htpasswd_line = auth.htpasswd_line
             ));
         }
 
@@ -288,8 +289,8 @@ mod tests {
         assert!(config.contains("my-app-auth-example-com:"));
         assert!(config.contains("basicAuth:"));
         assert!(config.contains("users:"));
-        // Check $ is escaped to $$ in YAML
-        assert!(config.contains("$$2y$$10$$"));
+        // Check single quotes are used (no escaping needed)
+        assert!(config.contains("- 'admin:$2y$10$"));
 
         // Check router uses auth middleware
         assert!(config.contains("- my-app-auth-example-com"));
