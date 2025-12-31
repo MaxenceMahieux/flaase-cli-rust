@@ -50,6 +50,17 @@ chrono = { version = "0.4", features = ["serde"] }
 # Password hashing (for HTTP Basic Auth)
 bcrypt = "0.16"
 
+# Cryptography (for webhook signature verification)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# HTTP server (for webhook endpoint)
+tiny_http = "0.12"
+
+# Signal handling
+ctrlc = "3.4"
+
 # System
 libc = "0.2"
 
