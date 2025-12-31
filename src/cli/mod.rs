@@ -2,12 +2,14 @@ use clap::{Parser, Subcommand};
 
 pub mod app;
 pub mod auth;
+pub mod autodeploy;
 pub mod deploy;
 pub mod env;
 pub mod logs;
 pub mod server;
 pub mod server_status;
 pub mod status;
+pub mod webhook;
 
 /// Flaase CLI - Simplified VPS deployment
 #[derive(Parser)]
@@ -115,6 +117,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: AuthCommands,
     },
+
+    /// Webhook server for autodeploy
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,10 +205,14 @@ pub enum DomainCommands {
 
 #[derive(Subcommand)]
 pub enum AutodeployCommands {
-    /// Enable auto-deployment
+    /// Enable auto-deployment via GitHub webhook
     Enable {
         /// Name of the app
         app: String,
+
+        /// Branch to watch for deployments (default: main)
+        #[arg(long, short)]
+        branch: Option<String>,
     },
 
     /// Disable auto-deployment
@@ -213,6 +225,28 @@ pub enum AutodeployCommands {
     Status {
         /// Name of the app
         app: String,
+    },
+
+    /// Show webhook secret (for reconfiguration)
+    Secret {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Regenerate webhook secret
+    Regenerate {
+        /// Name of the app
+        app: String,
+    },
+
+    /// View deployment logs
+    Logs {
+        /// Name of the app
+        app: String,
+
+        /// Number of recent deployments to show (default: 10)
+        #[arg(long, short, default_value = "10")]
+        limit: usize,
     },
 }
 
@@ -266,4 +300,27 @@ pub enum AuthCommands {
         #[arg(long, short)]
         password: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum WebhookCommands {
+    /// Start the webhook server
+    Serve {
+        /// Port to listen on
+        #[arg(long, short, default_value = "9876")]
+        port: u16,
+
+        /// Host to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
+
+    /// Install webhook server as a systemd service
+    Install,
+
+    /// Uninstall the systemd service
+    Uninstall,
+
+    /// Show webhook server status
+    Status,
 }
