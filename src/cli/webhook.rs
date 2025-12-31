@@ -70,13 +70,18 @@ pub fn serve(host: &str, port: u16, verbose: bool) -> Result<(), AppError> {
         }
 
         // Route and handle requests
+        // Support both /webhook/xxx (direct) and /flaase/webhook/xxx (via Traefik)
         match (method.as_str(), url.as_str()) {
             ("GET", "/health") => {
                 let response = handle_health();
                 let _ = request.respond(response);
             }
+            ("POST", path) if path.starts_with("/flaase/webhook/") => {
+                // Strip /flaase prefix for handler
+                let webhook_path = path.strip_prefix("/flaase").unwrap_or(path);
+                handle_webhook(request, webhook_path, verbose);
+            }
             ("POST", path) if path.starts_with("/webhook/") => {
-                // handle_webhook takes ownership and responds internally
                 handle_webhook(request, path, verbose);
             }
             _ => {
