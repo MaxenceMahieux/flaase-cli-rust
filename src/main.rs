@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use flaase::cli::{
-    AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, ServerCommands,
-    WebhookCommands,
+    AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, NotifyCommands,
+    ServerCommands, WebhookCommands,
 };
 use flaase::ui;
 
@@ -144,6 +144,73 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
             }
             AutodeployCommands::Logs { app, limit } => {
                 flaase::cli::autodeploy::logs(&app, limit)?;
+                Ok(())
+            }
+            AutodeployCommands::Notify(notify_cmd) => match notify_cmd {
+                NotifyCommands::Status { app } => {
+                    flaase::cli::autodeploy::notify_status(&app)?;
+                    Ok(())
+                }
+                NotifyCommands::Enable { app } => {
+                    flaase::cli::autodeploy::notify_enable(&app)?;
+                    Ok(())
+                }
+                NotifyCommands::Disable { app } => {
+                    flaase::cli::autodeploy::notify_disable(&app)?;
+                    Ok(())
+                }
+                NotifyCommands::Slack {
+                    app,
+                    webhook_url,
+                    channel,
+                    username,
+                    remove,
+                } => {
+                    flaase::cli::autodeploy::notify_slack(
+                        &app,
+                        webhook_url.as_deref(),
+                        channel.as_deref(),
+                        username.as_deref(),
+                        remove,
+                    )?;
+                    Ok(())
+                }
+                NotifyCommands::Discord {
+                    app,
+                    webhook_url,
+                    username,
+                    remove,
+                } => {
+                    flaase::cli::autodeploy::notify_discord(
+                        &app,
+                        webhook_url.as_deref(),
+                        username.as_deref(),
+                        remove,
+                    )?;
+                    Ok(())
+                }
+                NotifyCommands::Events {
+                    app,
+                    on_start,
+                    on_success,
+                    on_failure,
+                } => {
+                    flaase::cli::autodeploy::notify_events(&app, on_start, on_success, on_failure)?;
+                    Ok(())
+                }
+                NotifyCommands::Test { app } => {
+                    flaase::cli::autodeploy::notify_test(&app)?;
+                    Ok(())
+                }
+            },
+            AutodeployCommands::RateLimit {
+                app,
+                enable,
+                disable,
+                max_deploys,
+                window,
+            } => {
+                flaase::cli::autodeploy::rate_limit(&app, enable, disable, max_deploys, window)?;
                 Ok(())
             }
         },

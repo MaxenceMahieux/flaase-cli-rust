@@ -253,6 +253,117 @@ pub enum AutodeployCommands {
         #[arg(long, short, default_value = "10")]
         limit: usize,
     },
+
+    /// Configure notifications (Slack/Discord)
+    #[command(subcommand)]
+    Notify(NotifyCommands),
+
+    /// Configure rate limiting
+    RateLimit {
+        /// Name of the app
+        app: String,
+
+        /// Enable rate limiting
+        #[arg(long)]
+        enable: bool,
+
+        /// Disable rate limiting
+        #[arg(long)]
+        disable: bool,
+
+        /// Maximum deployments allowed in the time window
+        #[arg(long)]
+        max_deploys: Option<u32>,
+
+        /// Time window in seconds
+        #[arg(long)]
+        window: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NotifyCommands {
+    /// Show notification configuration
+    Status {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Enable notifications
+    Enable {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Disable notifications
+    Disable {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Configure Slack notifications
+    Slack {
+        /// Name of the app
+        app: String,
+
+        /// Slack webhook URL
+        #[arg(long)]
+        webhook_url: Option<String>,
+
+        /// Channel override (optional)
+        #[arg(long)]
+        channel: Option<String>,
+
+        /// Username override (optional)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// Remove Slack configuration
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// Configure Discord notifications
+    Discord {
+        /// Name of the app
+        app: String,
+
+        /// Discord webhook URL
+        #[arg(long)]
+        webhook_url: Option<String>,
+
+        /// Username override (optional)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// Remove Discord configuration
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// Configure which events trigger notifications
+    Events {
+        /// Name of the app
+        app: String,
+
+        /// Notify on deployment start
+        #[arg(long)]
+        on_start: Option<bool>,
+
+        /// Notify on deployment success
+        #[arg(long)]
+        on_success: Option<bool>,
+
+        /// Notify on deployment failure
+        #[arg(long)]
+        on_failure: Option<bool>,
+    },
+
+    /// Send a test notification
+    Test {
+        /// Name of the app
+        app: String,
+    },
 }
 
 #[derive(Subcommand)]
