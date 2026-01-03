@@ -68,6 +68,6 @@ libc = "0.2"
 tempfile = "3.14"
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
 codegen-units = 1
