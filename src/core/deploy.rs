@@ -100,9 +100,78 @@ impl<'a> Deployer<'a> {
         format!("flaase-{}-network", self.config.name)
     }
 
-    /// Web container name.
+    /// Web container name (standard deployment).
     fn web_container_name(&self) -> String {
         format!("{}-web", self.container_prefix())
+    }
+
+    /// Blue container name (blue-green deployment).
+    fn blue_container_name(&self) -> String {
+        format!("{}-web-blue", self.container_prefix())
+    }
+
+    /// Green container name (blue-green deployment).
+    fn green_container_name(&self) -> String {
+        format!("{}-web-green", self.container_prefix())
+    }
+
+    /// Checks if blue-green deployment is enabled.
+    fn is_blue_green_enabled(&self) -> bool {
+        self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.blue_green.as_ref())
+            .map(|bg| bg.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Gets the blue-green configuration.
+    fn blue_green_config(&self) -> Option<&crate::core::app_config::BlueGreenConfig> {
+        self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.blue_green.as_ref())
+    }
+
+    /// Determines which slot is currently active (receiving traffic).
+    /// Returns "blue", "green", or "none".
+    fn active_slot(&self) -> Result<&'static str, AppError> {
+        let blue = self.blue_container_name();
+        let green = self.green_container_name();
+
+        let blue_running = self.runtime.container_is_running(&blue, self.ctx).unwrap_or(false);
+        let green_running = self.runtime.container_is_running(&green, self.ctx).unwrap_or(false);
+
+        // Check Traefik config to see which one is receiving traffic
+        // For simplicity, we'll assume the one that's running is active
+        // In a more complex setup, we'd check the Traefik config
+        if blue_running && !green_running {
+            Ok("blue")
+        } else if green_running && !blue_running {
+            Ok("green")
+        } else if blue_running && green_running {
+            // Both running - check which one was started last
+            // For now, default to blue as active
+            Ok("blue")
+        } else {
+            Ok("none")
+        }
+    }
+
+    /// Gets the container name for the active slot.
+    fn active_container_name(&self) -> Result<Option<String>, AppError> {
+        match self.active_slot()? {
+            "blue" => Ok(Some(self.blue_container_name())),
+            "green" => Ok(Some(self.green_container_name())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Gets the container name for the inactive slot (for new deployment).
+    fn inactive_slot_container_name(&self) -> Result<String, AppError> {
+        match self.active_slot()? {
+            "blue" => Ok(self.green_container_name()),
+            "green" => Ok(self.blue_container_name()),
+            _ => Ok(self.blue_container_name()), // Default to blue for first deployment
+        }
     }
 
     /// Database container name.
@@ -658,7 +727,17 @@ impl<'a> Deployer<'a> {
     }
 
     /// Starts the app container.
+    /// Uses blue-green deployment if enabled, otherwise standard deployment.
     fn start_app(&self) -> Result<(), AppError> {
+        if self.is_blue_green_enabled() {
+            self.start_app_blue_green()
+        } else {
+            self.start_app_standard()
+        }
+    }
+
+    /// Standard deployment (stop old, start new).
+    fn start_app_standard(&self) -> Result<(), AppError> {
         let container_name = self.web_container_name();
         let port = self.config.effective_port();
 
@@ -699,6 +778,219 @@ impl<'a> Deployer<'a> {
         self.runtime.connect_network(&container_name, "flaase-network", self.ctx)?;
 
         Ok(())
+    }
+
+    /// Blue-green deployment (zero-downtime).
+    fn start_app_blue_green(&self) -> Result<(), AppError> {
+        let port = self.config.effective_port();
+        let active_slot = self.active_slot()?;
+        let new_container = self.inactive_slot_container_name()?;
+        let old_container = self.active_container_name()?;
+
+        ui::info(&format!(
+            "Blue-green deployment: {} -> {}",
+            if active_slot == "none" { "initial" } else { active_slot },
+            if new_container.contains("blue") { "blue" } else { "green" }
+        ));
+
+        // Remove new container if it exists (from failed previous deployment)
+        if self.runtime.container_exists(&new_container, self.ctx)? {
+            self.runtime.stop_container(&new_container, self.ctx).ok();
+            self.runtime.remove_container(&new_container, self.ctx)?;
+        }
+
+        // Find available host port
+        let host_port = self.runtime.find_available_port(port, self.ctx)?;
+
+        // Determine slot label
+        let slot = if new_container.contains("blue") { "blue" } else { "green" };
+
+        let mut container = ContainerConfig::new(&new_container, &self.image_name())
+            .port(host_port, port)
+            .network(&self.network_name())
+            .restart(RestartPolicy::UnlessStopped)
+            .label("flaase.managed", "true")
+            .label("flaase.app", &self.config.name)
+            .label("flaase.service", "web")
+            .label("flaase.slot", slot);
+
+        // Add environment files
+        let env_path = self.config.env_path();
+        let auto_env_path = self.config.auto_env_path();
+
+        if auto_env_path.exists() {
+            container = container.env_file(auto_env_path.to_str().unwrap());
+        }
+        if env_path.exists() {
+            container = container.env_file(env_path.to_str().unwrap());
+        }
+
+        // Set NODE_ENV for JS stacks
+        container = container.env("NODE_ENV", "production");
+
+        // Start new container
+        ui::info(&format!("  Starting new container: {}", new_container));
+        self.runtime.run_container(&container, self.ctx)?;
+
+        // Connect to Traefik network for routing
+        self.runtime.connect_network(&new_container, "flaase-network", self.ctx)?;
+
+        // Health check on new container before switching traffic
+        ui::info("  Running health check on new container...");
+        self.health_check_container(&new_container)?;
+
+        // Switch traffic to new container (update Traefik config)
+        ui::info("  Switching traffic to new container...");
+        self.configure_routing_for_container(&new_container)?;
+
+        // Handle old container
+        if let Some(old) = old_container {
+            let bg_config = self.blue_green_config();
+            let keep_seconds = bg_config.map(|c| c.keep_old_seconds).unwrap_or(300);
+            let auto_cleanup = bg_config.map(|c| c.auto_cleanup).unwrap_or(true);
+
+            if keep_seconds == 0 {
+                // Stop immediately
+                ui::info(&format!("  Stopping old container: {}", old));
+                self.runtime.stop_container(&old, self.ctx).ok();
+                self.runtime.remove_container(&old, self.ctx).ok();
+            } else if auto_cleanup {
+                // Schedule cleanup in background
+                ui::info(&format!(
+                    "  Old container {} will be stopped in {}s (instant rollback available)",
+                    old, keep_seconds
+                ));
+                self.schedule_container_cleanup(&old, keep_seconds);
+            } else {
+                ui::info(&format!(
+                    "  Old container {} kept running (manual cleanup required)",
+                    old
+                ));
+            }
+        }
+
+        ui::success("  Blue-green deployment complete!");
+        Ok(())
+    }
+
+    /// Performs health check on a specific container.
+    fn health_check_container(&self, container_name: &str) -> Result<(), AppError> {
+        if self.ctx.is_dry_run() {
+            return Ok(());
+        }
+
+        let health_config = self.config.effective_health_check();
+        let port = self.config.effective_port();
+
+        for attempt in 1..=health_config.retries {
+            // Check if container is running
+            if !self.runtime.container_is_running(container_name, self.ctx)? {
+                return Err(AppError::Deploy(format!(
+                    "Container {} stopped unexpectedly",
+                    container_name
+                )));
+            }
+
+            // Try HTTP health check via Traefik
+            let url = format!("http://{}:{}{}", container_name, port, health_config.endpoint);
+            let timeout = health_config.timeout.to_string();
+
+            let result = self.ctx.run_command(
+                "docker",
+                &[
+                    "exec", "flaase-traefik",
+                    "wget", "-q", "--spider",
+                    "--timeout", &timeout,
+                    &url,
+                ],
+            );
+
+            if result.is_ok() && result.as_ref().unwrap().success {
+                return Ok(());
+            }
+
+            // Fallback: check inside the container itself
+            let wget_result = self.runtime.exec_in_container(
+                container_name,
+                &["wget", "-q", "--spider", &format!("http://localhost:{}{}", port, health_config.endpoint)],
+                self.ctx,
+            );
+
+            if wget_result.is_ok() {
+                return Ok(());
+            }
+
+            if attempt < health_config.retries {
+                std::thread::sleep(Duration::from_secs(health_config.interval as u64));
+            }
+        }
+
+        // Get container logs for debugging
+        let logs = self.runtime.get_logs(container_name, 30, self.ctx)?;
+
+        Err(AppError::Deploy(format!(
+            "Health check failed for {} after {} attempts.\n\nRecent logs:\n{}",
+            container_name, health_config.retries, logs
+        )))
+    }
+
+    /// Configures Traefik routing to point to a specific container.
+    fn configure_routing_for_container(&self, container_name: &str) -> Result<(), AppError> {
+        use crate::core::secrets::SecretsManager;
+        use crate::templates::traefik::{generate_app_config_with_service, AppDomain};
+
+        let port = self.config.effective_port();
+
+        // Load secrets for auth info
+        let secrets = SecretsManager::load_secrets(&self.config.secrets_path()).ok();
+
+        // Build domain list with auth info
+        let mut domains = Vec::new();
+        for domain_config in &self.config.domains {
+            let mut app_domain = AppDomain::new(&domain_config.domain, domain_config.primary);
+
+            // Add auth if configured
+            if let Some(ref secrets) = secrets {
+                if let Some(auth_secret) = secrets.auth.get(&domain_config.domain) {
+                    app_domain = app_domain.with_auth(&auth_secret.password_hash);
+                }
+            }
+
+            domains.push(app_domain);
+        }
+
+        // Generate and write Traefik config pointing to specific container
+        let traefik_config = generate_app_config_with_service(
+            &self.config.name,
+            &domains,
+            port,
+            container_name,
+        );
+        let traefik_path = format!(
+            "{}/{}.yml",
+            crate::core::FLAASE_TRAEFIK_DYNAMIC_PATH,
+            self.config.name
+        );
+
+        self.ctx.write_file(&traefik_path, &traefik_config)
+    }
+
+    /// Schedules container cleanup in background.
+    fn schedule_container_cleanup(&self, container_name: &str, delay_seconds: u64) {
+        let container = container_name.to_string();
+
+        // Spawn a background thread to cleanup after delay
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(delay_seconds));
+
+            // Use docker directly since we don't have access to runtime here
+            let _ = std::process::Command::new("docker")
+                .args(["stop", &container])
+                .output();
+            let _ = std::process::Command::new("docker")
+                .args(["rm", &container])
+                .output();
+        });
     }
 
     /// Configures Traefik routing for all domains.

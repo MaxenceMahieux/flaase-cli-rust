@@ -536,6 +536,9 @@ pub struct AutodeployConfig {
     /// Docker build configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildConfig>,
+    /// Blue-green deployment configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blue_green: Option<BlueGreenConfig>,
 }
 
 impl AutodeployConfig {
@@ -556,6 +559,7 @@ impl AutodeployConfig {
             environments: None,
             approval: None,
             build: None,
+            blue_green: None,
         }
     }
 
@@ -915,6 +919,41 @@ impl BuildConfig {
     }
 
     fn default_buildkit() -> bool {
+        true
+    }
+}
+
+/// Blue-green deployment configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlueGreenConfig {
+    /// Whether blue-green deployment is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// How long to keep the old container running after switch (seconds).
+    /// Set to 0 to stop immediately, or higher for instant rollback capability.
+    #[serde(default = "BlueGreenConfig::default_keep_old_seconds")]
+    pub keep_old_seconds: u64,
+    /// Whether to auto-cleanup old container after keep_old_seconds.
+    #[serde(default = "BlueGreenConfig::default_auto_cleanup")]
+    pub auto_cleanup: bool,
+}
+
+impl Default for BlueGreenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keep_old_seconds: Self::default_keep_old_seconds(),
+            auto_cleanup: Self::default_auto_cleanup(),
+        }
+    }
+}
+
+impl BlueGreenConfig {
+    fn default_keep_old_seconds() -> u64 {
+        300 // 5 minutes
+    }
+
+    fn default_auto_cleanup() -> bool {
         true
     }
 }

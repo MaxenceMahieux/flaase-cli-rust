@@ -955,7 +955,7 @@ pub fn notify_test(app: &str) -> Result<(), AppError> {
 // Test Configuration Commands
 // ============================================================================
 
-use crate::core::app_config::{TestConfig, HooksConfig, HookCommand, RollbackConfig, EnvironmentConfig, ApprovalConfig, BuildConfig};
+use crate::core::app_config::{TestConfig, HooksConfig, HookCommand, RollbackConfig, EnvironmentConfig, ApprovalConfig, BuildConfig, BlueGreenConfig};
 
 /// Configures test execution for an app.
 pub fn test_config(
@@ -1646,6 +1646,99 @@ pub fn build_config(
         from.as_deref().unwrap_or("(none)")
     );
     println!();
+
+    Ok(())
+}
+
+// ============================================================================
+// Blue-Green Configuration Commands
+// ============================================================================
+
+/// Configures blue-green deployment for an app.
+pub fn blue_green_config(
+    app: &str,
+    enable: bool,
+    disable: bool,
+    keep_old: Option<u64>,
+    no_auto_cleanup: bool,
+) -> Result<(), AppError> {
+    let mut config = AppConfig::load(app)?;
+
+    if config.autodeploy_config.is_none() {
+        return Err(AppError::Validation(
+            "Autodeploy is not enabled for this app.".into(),
+        ));
+    }
+
+    let autodeploy = config.autodeploy_config.as_mut().unwrap();
+
+    // Initialize blue-green config if not present
+    if autodeploy.blue_green.is_none() {
+        autodeploy.blue_green = Some(BlueGreenConfig::default());
+    }
+
+    let bg = autodeploy.blue_green.as_mut().unwrap();
+
+    // Handle enable/disable
+    if enable {
+        bg.enabled = true;
+        ui::success("Blue-green deployment enabled");
+    } else if disable {
+        bg.enabled = false;
+        ui::success("Blue-green deployment disabled");
+    }
+
+    // Update keep_old_seconds if provided
+    if let Some(seconds) = keep_old {
+        bg.keep_old_seconds = seconds;
+        ui::info(&format!("Keep old container for {}s after switch", seconds));
+    }
+
+    // Handle auto-cleanup
+    if no_auto_cleanup {
+        bg.auto_cleanup = false;
+        ui::info("Auto-cleanup disabled (manual cleanup required)");
+    }
+
+    // Extract values for display
+    let enabled = bg.enabled;
+    let keep_seconds = bg.keep_old_seconds;
+    let auto_cleanup = bg.auto_cleanup;
+
+    config.save()?;
+
+    // Show current configuration
+    println!();
+    println!("Blue-green deployment for {}:", console::style(app).cyan());
+    println!();
+    println!(
+        "  Enabled:       {}",
+        if enabled {
+            console::style("Yes").green()
+        } else {
+            console::style("No").dim()
+        }
+    );
+    println!("  Keep old:      {}s", keep_seconds);
+    println!(
+        "  Auto-cleanup:  {}",
+        if auto_cleanup { "Yes" } else { "No" }
+    );
+    println!();
+
+    if enabled {
+        println!("How it works:");
+        println!("  1. New container starts in inactive slot (blue/green)");
+        println!("  2. Health check on new container");
+        println!("  3. Traffic switches to new container (zero downtime)");
+        println!("  4. Old container stays for {}s (instant rollback available)", keep_seconds);
+        if auto_cleanup {
+            println!("  5. Old container auto-removed after {}s", keep_seconds);
+        } else {
+            println!("  5. Old container kept (manual cleanup required)");
+        }
+        println!();
+    }
 
     Ok(())
 }

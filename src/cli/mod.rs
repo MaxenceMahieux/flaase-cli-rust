@@ -357,6 +357,28 @@ pub enum AutodeployCommands {
         #[arg(long)]
         cache_from: Option<String>,
     },
+
+    /// Configure blue-green deployment (zero-downtime)
+    BlueGreen {
+        /// Name of the app
+        app: String,
+
+        /// Enable blue-green deployment
+        #[arg(long)]
+        enable: bool,
+
+        /// Disable blue-green deployment
+        #[arg(long)]
+        disable: bool,
+
+        /// How long to keep old container running after switch (seconds, for instant rollback)
+        #[arg(long)]
+        keep_old: Option<u64>,
+
+        /// Disable auto-cleanup of old container
+        #[arg(long)]
+        no_auto_cleanup: bool,
+    },
 }
 
 #[derive(Subcommand)]

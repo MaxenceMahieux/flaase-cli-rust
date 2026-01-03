@@ -188,6 +188,198 @@ http:
     )
 }
 
+/// Generates a Traefik dynamic configuration for an app with a custom service target.
+/// Used for blue-green deployments where traffic is routed to a specific container.
+pub fn generate_app_config_with_service(
+    app_name: &str,
+    domains: &[AppDomain],
+    container_port: u16,
+    container_name: &str,
+) -> String {
+    let mut routers = String::new();
+    let mut services = String::new();
+    let mut auth_middlewares = String::new();
+
+    // Generate router for each domain
+    for (i, domain) in domains.iter().enumerate() {
+        let router_name = if i == 0 {
+            app_name.to_string()
+        } else {
+            format!("{}-{}", app_name, i)
+        };
+
+        // Sanitize domain for middleware name (replace dots with dashes)
+        let domain_safe = domain.domain.replace('.', "-");
+        let auth_middleware_name = format!("{}-auth-{}", app_name, domain_safe);
+
+        // Build middleware list for this domain
+        let mut https_middlewares = Vec::new();
+        if domain.auth.is_some() {
+            https_middlewares.push(auth_middleware_name.clone());
+        }
+
+        // Generate auth middleware if needed
+        if let Some(auth) = &domain.auth {
+            auth_middlewares.push_str(&format!(
+                r#"    {middleware_name}:
+      basicAuth:
+        users:
+          - '{htpasswd_line}'
+"#,
+                middleware_name = auth_middleware_name,
+                htpasswd_line = auth.htpasswd_line
+            ));
+        }
+
+        // HTTP router (for ACME challenge and redirect)
+        routers.push_str(&format!(
+            r#"    {router_name}-http:
+      rule: "Host(`{domain}`)"
+      entryPoints:
+        - web
+      service: {app_name}
+      middlewares:
+        - {app_name}-redirect-https
+"#,
+            router_name = router_name,
+            domain = domain.domain,
+            app_name = app_name
+        ));
+
+        // HTTPS router with optional auth middleware
+        if https_middlewares.is_empty() {
+            routers.push_str(&format!(
+                r#"    {router_name}:
+      rule: "Host(`{domain}`)"
+      entryPoints:
+        - websecure
+      service: {app_name}
+      tls:
+        certResolver: letsencrypt
+"#,
+                router_name = router_name,
+                domain = domain.domain,
+                app_name = app_name
+            ));
+        } else {
+            let middlewares_list = https_middlewares
+                .iter()
+                .map(|m| format!("        - {}", m))
+                .collect::<Vec<_>>()
+                .join("\n");
+            routers.push_str(&format!(
+                r#"    {router_name}:
+      rule: "Host(`{domain}`)"
+      entryPoints:
+        - websecure
+      service: {app_name}
+      middlewares:
+{middlewares_list}
+      tls:
+        certResolver: letsencrypt
+"#,
+                router_name = router_name,
+                domain = domain.domain,
+                app_name = app_name,
+                middlewares_list = middlewares_list
+            ));
+        }
+
+        // Add www routers if primary domain
+        if domain.primary && !domain.domain.starts_with("www.") {
+            routers.push_str(&format!(
+                r#"    {app_name}-www-http:
+      rule: "Host(`www.{domain}`)"
+      entryPoints:
+        - web
+      service: {app_name}
+      middlewares:
+        - {app_name}-redirect-https
+"#,
+                app_name = app_name,
+                domain = domain.domain
+            ));
+
+            if https_middlewares.is_empty() {
+                routers.push_str(&format!(
+                    r#"    {app_name}-www:
+      rule: "Host(`www.{domain}`)"
+      entryPoints:
+        - websecure
+      service: {app_name}
+      tls:
+        certResolver: letsencrypt
+"#,
+                    app_name = app_name,
+                    domain = domain.domain
+                ));
+            } else {
+                let middlewares_list = https_middlewares
+                    .iter()
+                    .map(|m| format!("        - {}", m))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                routers.push_str(&format!(
+                    r#"    {app_name}-www:
+      rule: "Host(`www.{domain}`)"
+      entryPoints:
+        - websecure
+      service: {app_name}
+      middlewares:
+{middlewares_list}
+      tls:
+        certResolver: letsencrypt
+"#,
+                    app_name = app_name,
+                    domain = domain.domain,
+                    middlewares_list = middlewares_list
+                ));
+            }
+        }
+    }
+
+    // Generate service pointing to specific container
+    services.push_str(&format!(
+        r#"    {app_name}:
+      loadBalancer:
+        servers:
+          - url: "http://{container_name}:{port}"
+"#,
+        app_name = app_name,
+        container_name = container_name,
+        port = container_port
+    ));
+
+    // Generate middlewares (redirect + auth)
+    let middlewares = format!(
+        r#"  middlewares:
+    {app_name}-redirect-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+{auth_middlewares}"#,
+        app_name = app_name,
+        auth_middlewares = auth_middlewares
+    );
+
+    format!(
+        r#"# Traefik dynamic configuration for {app_name}
+# Generated by Flaase (blue-green: {container_name})
+
+http:
+  routers:
+{routers}
+  services:
+{services}
+{middlewares}"#,
+        app_name = app_name,
+        container_name = container_name,
+        routers = routers,
+        services = services,
+        middlewares = middlewares
+    )
+}
+
 /// Generates a Traefik maintenance configuration (503 page) for an app.
 pub fn generate_maintenance_config(app_name: &str) -> String {
     format!(

@@ -329,6 +329,16 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
                 flaase::cli::autodeploy::build_config(&app, cache, buildkit, cache_from.as_deref())?;
                 Ok(())
             }
+            AutodeployCommands::BlueGreen {
+                app,
+                enable,
+                disable,
+                keep_old,
+                no_auto_cleanup,
+            } => {
+                flaase::cli::autodeploy::blue_green_config(&app, enable, disable, keep_old, no_auto_cleanup)?;
+                Ok(())
+            }
         },
 
         Commands::Auth { command } => match command {
