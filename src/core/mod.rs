@@ -5,11 +5,13 @@ pub mod deploy;
 pub mod deployments;
 pub mod env;
 pub mod error;
+pub mod notifications;
 pub mod secrets;
 
 pub use app_config::{
-    AppConfig, AutodeployConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType, DomainAuth,
-    DomainConfig, HealthCheckConfig, Stack,
+    AppConfig, AutodeployConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType,
+    DiscordNotificationConfig, DomainAuth, DomainConfig, HealthCheckConfig,
+    NotificationConfig, NotificationEvents, RateLimitConfig, SlackNotificationConfig, Stack,
 };
 pub use config::{
     ExistingComponentAction, ServerConfig, FLAASE_APPS_PATH, FLAASE_BASE_PATH, FLAASE_CONFIG_PATH,
@@ -17,7 +19,8 @@ pub use config::{
 };
 pub use context::{CommandOutput, ExecutionContext};
 pub use deploy::{format_duration, DeployResult, Deployer, DeployStep};
+pub use deployments::{DeploymentHistory, DeploymentRecord, DeploymentSource, DeploymentStatus};
 pub use env::{EnvManager, EnvSource, EnvVar};
 pub use error::AppError;
+pub use notifications::{send_notifications, test_notification, DeploymentEvent};
 pub use secrets::{AppSecrets, AuthSecret, SecretsManager, WebhookSecret};
-pub use deployments::{DeploymentHistory, DeploymentRecord, DeploymentSource, DeploymentStatus};
