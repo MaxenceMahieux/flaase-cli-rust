@@ -161,6 +161,72 @@ impl SecretsManager {
             .map_err(|e| AppError::Config(format!("Failed to parse secrets: {}", e)))
     }
 
+    /// Returns the secrets file path for a specific environment.
+    pub fn env_secrets_path(base_path: &Path, environment: &str) -> std::path::PathBuf {
+        if environment == "production" || environment.is_empty() {
+            base_path.to_path_buf()
+        } else {
+            let parent = base_path.parent().unwrap_or(Path::new("."));
+            parent.join(format!(".secrets.{}", environment))
+        }
+    }
+
+    /// Loads secrets for a specific environment with fallback to default.
+    /// Priority: environment-specific -> production (default)
+    pub fn load_secrets_for_env(base_path: &Path, environment: &str) -> Result<AppSecrets, AppError> {
+        let env_path = Self::env_secrets_path(base_path, environment);
+
+        // Try environment-specific secrets first
+        if env_path.exists() {
+            return Self::load_secrets(&env_path);
+        }
+
+        // Fall back to default (production) secrets
+        if base_path.exists() {
+            return Self::load_secrets(base_path);
+        }
+
+        Ok(AppSecrets::default())
+    }
+
+    /// Saves secrets for a specific environment.
+    pub fn save_secrets_for_env(base_path: &Path, environment: &str, secrets: &AppSecrets) -> Result<(), AppError> {
+        let env_path = Self::env_secrets_path(base_path, environment);
+        Self::save_secrets(&env_path, secrets)
+    }
+
+    /// Lists all environment secrets files for an app.
+    pub fn list_env_secrets(base_path: &Path) -> Result<Vec<String>, AppError> {
+        let parent = base_path.parent().unwrap_or(Path::new("."));
+        let mut environments = Vec::new();
+
+        // Check default secrets
+        if base_path.exists() {
+            environments.push("production".to_string());
+        }
+
+        // Find environment-specific secrets
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(".secrets.") && name != ".secrets" {
+                    let env_name = name.trim_start_matches(".secrets.").to_string();
+                    if !env_name.is_empty() {
+                        environments.push(env_name);
+                    }
+                }
+            }
+        }
+
+        Ok(environments)
+    }
+
+    /// Copies secrets from one environment to another.
+    pub fn copy_secrets(base_path: &Path, from_env: &str, to_env: &str) -> Result<(), AppError> {
+        let secrets = Self::load_secrets_for_env(base_path, from_env)?;
+        Self::save_secrets_for_env(base_path, to_env, &secrets)
+    }
+
     /// Generates environment variables from secrets.
     pub fn generate_env_vars(
         secrets: &AppSecrets,

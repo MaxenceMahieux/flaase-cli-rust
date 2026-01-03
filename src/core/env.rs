@@ -318,6 +318,119 @@ impl EnvManager {
         let auto_count = vars.iter().filter(|v| v.source == EnvSource::Auto).count();
         (user_count, auto_count)
     }
+
+    /// Loads environment variables from a specific file path.
+    pub fn load_from_file(path: &Path) -> Result<Vec<EnvVar>, AppError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let vars_map = Self::parse_env_file(path)?;
+        let mut vars: Vec<EnvVar> = vars_map
+            .into_iter()
+            .map(|(key, value)| EnvVar {
+                key,
+                value,
+                source: EnvSource::User,
+            })
+            .collect();
+
+        vars.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(vars)
+    }
+
+    /// Sets environment variables to a specific file path.
+    pub fn set_to_file(path: &Path, assignments: &[(String, String)]) -> Result<usize, AppError> {
+        // Load existing vars from file
+        let mut vars = if path.exists() {
+            Self::parse_env_file(path)?
+        } else {
+            BTreeMap::new()
+        };
+
+        let mut count = 0;
+        for (key, value) in assignments {
+            Self::validate_key(key)?;
+            vars.insert(key.clone(), value.clone());
+            count += 1;
+        }
+
+        // Write back to file
+        let mut content = String::new();
+        for (key, value) in &vars {
+            content.push_str(&format!("{}={}\n", key, Self::escape_value(value)));
+        }
+
+        Self::write_env_file(path, &content)?;
+        Ok(count)
+    }
+
+    /// Removes an environment variable from a specific file path.
+    pub fn remove_from_file(path: &Path, key: &str) -> Result<bool, AppError> {
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let mut vars = Self::parse_env_file(path)?;
+
+        if vars.remove(key).is_some() {
+            let mut content = String::new();
+            for (k, v) in &vars {
+                content.push_str(&format!("{}={}\n", k, Self::escape_value(v)));
+            }
+            Self::write_env_file(path, &content)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Lists all environment files for an app directory.
+    pub fn list_environments(app_dir: &Path) -> Result<Vec<String>, AppError> {
+        let mut environments = Vec::new();
+
+        // Check default .env
+        if app_dir.join(".env").exists() {
+            environments.push("production".to_string());
+        }
+
+        // Find .env.* files
+        if let Ok(entries) = fs::read_dir(app_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(".env.") && name != ".env.auto" {
+                    let env_name = name.trim_start_matches(".env.").to_string();
+                    if !env_name.is_empty() && env_name != "auto" {
+                        environments.push(env_name);
+                    }
+                }
+            }
+        }
+
+        environments.sort();
+        Ok(environments)
+    }
+
+    /// Copies environment variables from one file to another.
+    pub fn copy_env_file(from_path: &Path, to_path: &Path) -> Result<usize, AppError> {
+        if !from_path.exists() {
+            return Err(AppError::Config(format!(
+                "Source environment file does not exist: {}",
+                from_path.display()
+            )));
+        }
+
+        let vars = Self::parse_env_file(from_path)?;
+        let count = vars.len();
+
+        let mut content = String::new();
+        for (key, value) in &vars {
+            content.push_str(&format!("{}={}\n", key, Self::escape_value(value)));
+        }
+
+        Self::write_env_file(to_path, &content)?;
+        Ok(count)
+    }
 }
 
 #[cfg(test)]

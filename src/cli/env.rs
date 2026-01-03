@@ -9,13 +9,34 @@ use crate::core::error::AppError;
 use crate::core::FLAASE_APPS_PATH;
 use crate::ui;
 
+/// Gets the env file path for a specific environment.
+fn get_env_path(app_dir: &PathBuf, environment: Option<&str>) -> PathBuf {
+    let env = environment.unwrap_or("production");
+    if env == "production" || env.is_empty() {
+        app_dir.join(".env")
+    } else {
+        app_dir.join(format!(".env.{}", env))
+    }
+}
+
 /// Lists environment variables for an app.
-pub fn list(app: &str, show_values: bool) -> Result<(), AppError> {
+pub fn list(app: &str, show_values: bool, environment: Option<&str>) -> Result<(), AppError> {
     let app_dir = get_app_dir(app)?;
-    let vars = EnvManager::load(&app_dir)?;
+    let env_name = environment.unwrap_or("production");
+    let env_path = get_env_path(&app_dir, environment);
+
+    let vars = if env_path.exists() {
+        EnvManager::load_from_file(&env_path)?
+    } else if environment.is_some() {
+        // Environment-specific file doesn't exist
+        Vec::new()
+    } else {
+        // Load default (includes auto-generated)
+        EnvManager::load(&app_dir)?
+    };
 
     if vars.is_empty() {
-        ui::info(&format!("No environment variables for {}", app));
+        ui::info(&format!("No environment variables for {} ({})", app, env_name));
         return Ok(());
     }
 
@@ -29,7 +50,7 @@ pub fn list(app: &str, show_values: bool) -> Result<(), AppError> {
         println!();
     }
 
-    println!("Environment variables for {}", app);
+    println!("Environment variables for {} ({}):", app, console::style(env_name).cyan());
     println!();
 
     // Calculate column widths
@@ -95,8 +116,10 @@ pub fn list(app: &str, show_values: bool) -> Result<(), AppError> {
 }
 
 /// Sets environment variables for an app.
-pub fn set(app: &str, assignments: &[String]) -> Result<(), AppError> {
+pub fn set(app: &str, assignments: &[String], environment: Option<&str>) -> Result<(), AppError> {
     let app_dir = get_app_dir(app)?;
+    let env_name = environment.unwrap_or("production");
+    let env_path = get_env_path(&app_dir, environment);
 
     // Parse all assignments
     let mut parsed: Vec<(String, String)> = Vec::new();
@@ -105,41 +128,49 @@ pub fn set(app: &str, assignments: &[String]) -> Result<(), AppError> {
         parsed.push((key, value));
     }
 
-    // Set variables
-    let count = EnvManager::set(&app_dir, &parsed)?;
+    // Set variables in the environment-specific file
+    let count = EnvManager::set_to_file(&env_path, &parsed)?;
 
     ui::success(&format!(
-        "Set {} environment variable{}",
+        "Set {} environment variable{} for {}",
         count,
-        if count == 1 { "" } else { "s" }
+        if count == 1 { "" } else { "s" },
+        env_name
     ));
 
-    // Ask to restart
-    prompt_restart(app)?;
+    // Ask to restart only if production
+    if env_name == "production" {
+        prompt_restart(app)?;
+    }
 
     Ok(())
 }
 
 /// Removes an environment variable from an app.
-pub fn remove(app: &str, key: &str) -> Result<(), AppError> {
+pub fn remove(app: &str, key: &str, environment: Option<&str>) -> Result<(), AppError> {
     let app_dir = get_app_dir(app)?;
+    let env_name = environment.unwrap_or("production");
+    let env_path = get_env_path(&app_dir, environment);
 
-    let removed = EnvManager::remove(&app_dir, key)?;
+    let removed = EnvManager::remove_from_file(&env_path, key)?;
 
     if removed {
-        ui::success(&format!("Removed {}", key));
-        prompt_restart(app)?;
+        ui::success(&format!("Removed {} from {}", key, env_name));
+        if env_name == "production" {
+            prompt_restart(app)?;
+        }
     } else {
-        ui::warning(&format!("Variable '{}' not found", key));
+        ui::warning(&format!("Variable '{}' not found in {}", key, env_name));
     }
 
     Ok(())
 }
 
 /// Opens the env file in the user's editor.
-pub fn edit(app: &str) -> Result<(), AppError> {
+pub fn edit(app: &str, environment: Option<&str>) -> Result<(), AppError> {
     let app_dir = get_app_dir(app)?;
-    let env_path = EnvManager::get_user_env_path(&app_dir);
+    let env_name = environment.unwrap_or("production");
+    let env_path = get_env_path(&app_dir, environment);
 
     // Ensure the file exists
     if !env_path.exists() {
@@ -172,10 +203,10 @@ pub fn edit(app: &str) -> Result<(), AppError> {
         return Err(AppError::Command("Editor exited with error".into()));
     }
 
-    ui::success("Environment file saved");
+    ui::success(&format!("Environment file saved ({})", env_name));
 
     // Validate the file after editing
-    match EnvManager::load_user(&app_dir) {
+    match EnvManager::load_from_file(&env_path) {
         Ok(vars) => {
             ui::info(&format!(
                 "{} variable{} defined",
@@ -223,6 +254,85 @@ fn prompt_restart(app: &str) -> Result<(), AppError> {
             app
         ));
     }
+
+    Ok(())
+}
+
+/// Copies environment variables from one environment to another.
+pub fn copy(app: &str, from: &str, to: &str) -> Result<(), AppError> {
+    let app_dir = get_app_dir(app)?;
+
+    let from_path = get_env_path(&app_dir, Some(from));
+    let to_path = get_env_path(&app_dir, Some(to));
+
+    if !from_path.exists() {
+        return Err(AppError::Config(format!(
+            "Source environment '{}' does not exist",
+            from
+        )));
+    }
+
+    // Confirm if target exists
+    if to_path.exists() {
+        ui::warning(&format!(
+            "Environment '{}' already exists and will be overwritten.",
+            to
+        ));
+        let confirm = ui::confirm("Continue?", false)?;
+        if !confirm {
+            return Ok(());
+        }
+    }
+
+    let count = EnvManager::copy_env_file(&from_path, &to_path)?;
+
+    ui::success(&format!(
+        "Copied {} variable{} from {} to {}",
+        count,
+        if count == 1 { "" } else { "s" },
+        from,
+        to
+    ));
+
+    Ok(())
+}
+
+/// Lists all environments with their variable counts.
+pub fn envs(app: &str) -> Result<(), AppError> {
+    let app_dir = get_app_dir(app)?;
+
+    let environments = EnvManager::list_environments(&app_dir)?;
+
+    if environments.is_empty() {
+        ui::info(&format!("No environments configured for {}", app));
+        ui::info("Use 'fl env set <app> KEY=value --env <name>' to create one.");
+        return Ok(());
+    }
+
+    println!("Environments for {}:", app);
+    println!();
+
+    for env_name in &environments {
+        let env_path = get_env_path(&app_dir, Some(env_name));
+        let vars = EnvManager::load_from_file(&env_path)?;
+
+        let status = if env_name == "production" {
+            console::style("(default)").dim()
+        } else {
+            console::style("").dim()
+        };
+
+        println!(
+            "  {}  {} variable{} {}",
+            console::style(env_name).cyan(),
+            vars.len(),
+            if vars.len() == 1 { "" } else { "s" },
+            status
+        );
+    }
+
+    println!();
+    ui::info("Use 'fl env list <app> --env <name>' to view variables.");
 
     Ok(())
 }

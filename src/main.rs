@@ -78,26 +78,39 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
             Ok(())
         }
 
+        Commands::Rollback { app, to, list } => {
+            flaase::cli::deploy::rollback(&app, to.as_deref(), list, verbose)?;
+            Ok(())
+        }
+
         Commands::Logs { app, follow, lines } => {
             flaase::cli::logs::logs(&app, follow, lines, verbose)?;
             Ok(())
         }
 
         Commands::Env { command } => match command {
-            EnvCommands::List { app, show } => {
-                flaase::cli::env::list(&app, show)?;
+            EnvCommands::List { app, show, env } => {
+                flaase::cli::env::list(&app, show, env.as_deref())?;
                 Ok(())
             }
-            EnvCommands::Set { app, vars } => {
-                flaase::cli::env::set(&app, &vars)?;
+            EnvCommands::Set { app, vars, env } => {
+                flaase::cli::env::set(&app, &vars, env.as_deref())?;
                 Ok(())
             }
-            EnvCommands::Remove { app, key } => {
-                flaase::cli::env::remove(&app, &key)?;
+            EnvCommands::Remove { app, key, env } => {
+                flaase::cli::env::remove(&app, &key, env.as_deref())?;
                 Ok(())
             }
-            EnvCommands::Edit { app } => {
-                flaase::cli::env::edit(&app)?;
+            EnvCommands::Edit { app, env } => {
+                flaase::cli::env::edit(&app, env.as_deref())?;
+                Ok(())
+            }
+            EnvCommands::Copy { app, from, to } => {
+                flaase::cli::env::copy(&app, &from, &to)?;
+                Ok(())
+            }
+            EnvCommands::Envs { app } => {
+                flaase::cli::env::envs(&app)?;
                 Ok(())
             }
         },

@@ -81,6 +81,20 @@ pub enum Commands {
         app: String,
     },
 
+    /// Rollback to a previous deployment
+    Rollback {
+        /// Name of the app to rollback
+        app: String,
+
+        /// Target version (commit SHA). If not provided, rolls back to previous version
+        #[arg(long)]
+        to: Option<String>,
+
+        /// List available versions for rollback
+        #[arg(long, short)]
+        list: bool,
+    },
+
     /// View app logs
     Logs {
         /// Name of the app
@@ -149,6 +163,10 @@ pub enum EnvCommands {
         /// Show actual values (requires confirmation)
         #[arg(long)]
         show: bool,
+
+        /// Target environment (default: production)
+        #[arg(long, short)]
+        env: Option<String>,
     },
 
     /// Set environment variable(s)
@@ -159,6 +177,10 @@ pub enum EnvCommands {
         /// KEY=value pairs to set
         #[arg(required = true)]
         vars: Vec<String>,
+
+        /// Target environment (default: production)
+        #[arg(long, short)]
+        env: Option<String>,
     },
 
     /// Remove an environment variable
@@ -168,10 +190,36 @@ pub enum EnvCommands {
 
         /// Key to remove
         key: String,
+
+        /// Target environment (default: production)
+        #[arg(long, short)]
+        env: Option<String>,
     },
 
     /// Edit environment variables in your editor
     Edit {
+        /// Name of the app
+        app: String,
+
+        /// Target environment (default: production)
+        #[arg(long, short)]
+        env: Option<String>,
+    },
+
+    /// Copy environment variables from one environment to another
+    Copy {
+        /// Name of the app
+        app: String,
+
+        /// Source environment
+        from: String,
+
+        /// Target environment
+        to: String,
+    },
+
+    /// List all environments with their variable counts
+    Envs {
         /// Name of the app
         app: String,
     },
