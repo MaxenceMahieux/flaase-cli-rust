@@ -3,18 +3,132 @@
 // Read trait is needed for read_to_end on request body reader
 #[allow(unused_imports)]
 use std::io::Read;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tiny_http::{Response, Server, StatusCode};
 
 use crate::core::app_config::AppConfig;
-use crate::core::deployments::{DeploymentHistory, DeploymentRecord};
+use crate::core::deployments::{DeploymentHistory, DeploymentRecord, DeploymentStatus};
+use crate::core::notifications::{send_notifications, DeploymentEvent};
 use crate::core::error::AppError;
 use crate::core::secrets::SecretsManager;
+use crate::core::FLAASE_APPS_PATH;
 use crate::providers::webhook::WebhookProvider;
 use crate::ui;
+
+/// Rate limiting state for tracking webhook requests per app.
+struct RateLimitState {
+    /// Map of app name to list of request timestamps.
+    requests: HashMap<String, Vec<Instant>>,
+}
+
+impl RateLimitState {
+    fn new() -> Self {
+        Self {
+            requests: HashMap::new(),
+        }
+    }
+
+    /// Checks if a request is allowed under rate limiting rules.
+    /// Returns true if allowed, false if rate limited.
+    fn check_and_record(&mut self, app_name: &str, max_requests: u32, window_secs: u64) -> bool {
+        let now = Instant::now();
+        let window = Duration::from_secs(window_secs);
+
+        let timestamps = self.requests.entry(app_name.to_string()).or_default();
+
+        // Remove old timestamps outside the window
+        timestamps.retain(|t| now.duration_since(*t) < window);
+
+        // Check if we're at the limit
+        if timestamps.len() >= max_requests as usize {
+            return false;
+        }
+
+        // Record this request
+        timestamps.push(now);
+        true
+    }
+}
+
+/// Deployment lock manager using file-based locks.
+struct DeploymentLock;
+
+impl DeploymentLock {
+    /// Returns the lock file path for an app.
+    fn lock_path(app_name: &str) -> PathBuf {
+        PathBuf::from(format!("{}/{}/deploy.lock", FLAASE_APPS_PATH, app_name))
+    }
+
+    /// Attempts to acquire a deployment lock.
+    /// Returns Ok(()) if lock acquired, Err if already locked.
+    fn acquire(app_name: &str) -> Result<(), AppError> {
+        let lock_path = Self::lock_path(app_name);
+
+        // Check if lock file exists and is recent (less than 30 minutes old)
+        if lock_path.exists() {
+            if let Ok(metadata) = fs::metadata(&lock_path) {
+                if let Ok(modified) = metadata.modified() {
+                    let age = SystemTime::now()
+                        .duration_since(modified)
+                        .unwrap_or(Duration::from_secs(0));
+
+                    // If lock is less than 30 minutes old, consider it active
+                    if age < Duration::from_secs(30 * 60) {
+                        return Err(AppError::Config(
+                            "Deployment already in progress".into(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Create lock file with current timestamp
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        fs::write(&lock_path, timestamp.to_string())
+            .map_err(|e| AppError::Config(format!("Failed to create lock file: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Releases a deployment lock.
+    fn release(app_name: &str) {
+        let lock_path = Self::lock_path(app_name);
+        let _ = fs::remove_file(lock_path);
+    }
+
+    /// Checks if a deployment is currently locked.
+    fn is_locked(app_name: &str) -> bool {
+        let lock_path = Self::lock_path(app_name);
+
+        if !lock_path.exists() {
+            return false;
+        }
+
+        // Check if lock is recent
+        if let Ok(metadata) = fs::metadata(&lock_path) {
+            if let Ok(modified) = metadata.modified() {
+                let age = SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or(Duration::from_secs(0));
+
+                return age < Duration::from_secs(30 * 60);
+            }
+        }
+
+        false
+    }
+}
 
 /// Default port for the webhook server.
 pub const DEFAULT_PORT: u16 = 9876;
@@ -46,6 +160,9 @@ pub fn serve(host: &str, port: u16, verbose: bool) -> Result<(), AppError> {
     let r = running.clone();
 
     ctrlc_handler(r);
+
+    // Rate limiting state (shared across requests)
+    let rate_limit_state = Arc::new(Mutex::new(RateLimitState::new()));
 
     // Main request loop
     for request in server.incoming_requests() {
@@ -79,10 +196,10 @@ pub fn serve(host: &str, port: u16, verbose: bool) -> Result<(), AppError> {
             ("POST", path) if path.starts_with("/flaase/webhook/") => {
                 // Strip /flaase prefix for handler
                 let webhook_path = path.strip_prefix("/flaase").unwrap_or(path);
-                handle_webhook(request, webhook_path, verbose);
+                handle_webhook(request, webhook_path, verbose, Arc::clone(&rate_limit_state));
             }
             ("POST", path) if path.starts_with("/webhook/") => {
-                handle_webhook(request, path, verbose);
+                handle_webhook(request, path, verbose, Arc::clone(&rate_limit_state));
             }
             _ => {
                 let response = Response::from_string("Not Found")
@@ -115,7 +232,12 @@ fn handle_health() -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 /// Handles webhook requests from GitHub.
-fn handle_webhook(mut request: tiny_http::Request, path: &str, verbose: bool) {
+fn handle_webhook(
+    mut request: tiny_http::Request,
+    path: &str,
+    verbose: bool,
+    rate_limit_state: Arc<Mutex<RateLimitState>>,
+) {
     // Extract webhook path token
     let webhook_token = path.trim_start_matches("/webhook/");
 
@@ -243,7 +365,37 @@ fn handle_webhook(mut request: tiny_http::Request, path: &str, verbose: bool) {
         return;
     }
 
-    // Trigger deployment
+    // Check rate limiting
+    if let Some(rate_limit) = &autodeploy_config.rate_limit {
+        if rate_limit.enabled {
+            let mut state = rate_limit_state.lock().unwrap();
+            if !state.check_and_record(
+                &app_config.name,
+                rate_limit.max_deploys,
+                rate_limit.window_seconds,
+            ) {
+                if verbose {
+                    ui::warning(&format!(
+                        "Rate limit exceeded for {} ({} deploys in {}s)",
+                        app_config.name, rate_limit.max_deploys, rate_limit.window_seconds
+                    ));
+                }
+                let _ = request.respond(json_error(429, "Rate limit exceeded"));
+                return;
+            }
+        }
+    }
+
+    // Check deployment lock
+    if DeploymentLock::is_locked(&app_config.name) {
+        if verbose {
+            ui::warning(&format!("Deployment already in progress for {}", app_config.name));
+        }
+        let _ = request.respond(json_error(409, "Deployment already in progress"));
+        return;
+    }
+
+    // Extract deployment info
     let commit_sha = payload["after"]
         .as_str()
         .unwrap_or("")
@@ -272,7 +424,7 @@ fn handle_webhook(mut request: tiny_http::Request, path: &str, verbose: bool) {
         &commit_msg
     );
 
-    // Log deployment to history
+    // Log deployment to history (status: triggered)
     let deployment_record = DeploymentRecord::from_webhook(
         &commit_sha,
         &commit_msg,
@@ -286,21 +438,121 @@ fn handle_webhook(mut request: tiny_http::Request, path: &str, verbose: bool) {
         }
     }
 
-    // Run fl update in background
-    match trigger_update(&app_config.name) {
-        Ok(_) => {
-            println!(
-                "  {} Deployment triggered for {}",
-                console::style("\u{2713}").green(),
-                app_config.name
-            );
-            let _ = request.respond(json_response(200, "Deployment triggered"));
-        }
-        Err(e) => {
-            ui::error(&format!("Failed to trigger deployment: {}", e));
-            let _ = request.respond(json_error(500, "Failed to trigger deployment"));
-        }
+    // Send start notification
+    let notification_config = autodeploy_config.notifications.clone();
+    if let Some(ref notif) = notification_config {
+        let start_event = DeploymentEvent {
+            app_name: app_config.name.clone(),
+            commit_sha: commit_sha.clone(),
+            commit_message: commit_msg.clone(),
+            branch: branch.to_string(),
+            triggered_by: pusher.clone(),
+            status: DeploymentStatus::Triggered,
+            duration_secs: None,
+            error_message: None,
+        };
+        let _ = send_notifications(notif, &start_event);
     }
+
+    // Respond immediately to GitHub (deployment runs in background thread)
+    let _ = request.respond(json_response(200, "Deployment triggered"));
+
+    // Clone values needed for the background thread
+    let app_name = app_config.name.clone();
+    let branch_owned = branch.to_string();
+
+    // Run deployment in background thread with status tracking
+    std::thread::spawn(move || {
+        // Acquire deployment lock
+        if let Err(e) = DeploymentLock::acquire(&app_name) {
+            eprintln!("Failed to acquire lock for {}: {}", app_name, e);
+            return;
+        }
+
+        let start_time = Instant::now();
+
+        // Run deployment and capture result
+        let result = run_deployment(&app_name);
+
+        let duration_secs = start_time.elapsed().as_secs();
+
+        // Update deployment status
+        let (status, error_msg) = match &result {
+            Ok(_) => {
+                println!(
+                    "  {} Deployment succeeded for {} ({}s)",
+                    console::style("\u{2713}").green(),
+                    app_name,
+                    duration_secs
+                );
+                (DeploymentStatus::Success, None)
+            }
+            Err(e) => {
+                eprintln!(
+                    "  {} Deployment failed for {}: {}",
+                    console::style("\u{2717}").red(),
+                    app_name,
+                    e
+                );
+                (DeploymentStatus::Failed, Some(e.to_string()))
+            }
+        };
+
+        // Update deployment history with final status
+        if let Ok(config) = AppConfig::load(&app_name) {
+            let path = config.deployments_path();
+            if let Ok(mut history) = DeploymentHistory::load(&path) {
+                history.update_latest_status(status.clone());
+                let _ = history.save(&path);
+            }
+        }
+
+        // Send completion notification
+        if let Some(ref notif) = notification_config {
+            let event = DeploymentEvent {
+                app_name: app_name.clone(),
+                commit_sha,
+                commit_message: commit_msg,
+                branch: branch_owned,
+                triggered_by: pusher,
+                status,
+                duration_secs: Some(duration_secs),
+                error_message: error_msg,
+            };
+            let _ = send_notifications(notif, &event);
+        }
+
+        // Release deployment lock
+        DeploymentLock::release(&app_name);
+    });
+}
+
+/// Runs the deployment synchronously and returns the result.
+fn run_deployment(app_name: &str) -> Result<(), AppError> {
+    // Get the path to the current executable
+    let exe_path = std::env::current_exe()
+        .map_err(|e| AppError::Config(format!("Failed to get executable path: {}", e)))?;
+
+    // Run fl update and wait for completion
+    let output = Command::new(&exe_path)
+        .args(["update", app_name])
+        .output()
+        .map_err(|e| AppError::Config(format!("Failed to run update command: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let error_msg = if !stderr.is_empty() {
+            stderr.to_string()
+        } else if !stdout.is_empty() {
+            stdout.to_string()
+        } else {
+            "Deployment failed with unknown error".to_string()
+        };
+        return Err(AppError::Deploy(error_msg));
+    }
+
+    Ok(())
 }
 
 /// Logs a deployment to the app's deployment history.
@@ -330,21 +582,6 @@ fn find_app_by_webhook_path(
     }
 
     Ok(None)
-}
-
-/// Triggers an app update using fl update command.
-fn trigger_update(app_name: &str) -> Result<(), AppError> {
-    // Get the path to the current executable
-    let exe_path = std::env::current_exe()
-        .map_err(|e| AppError::Config(format!("Failed to get executable path: {}", e)))?;
-
-    // Spawn fl update in background
-    Command::new(&exe_path)
-        .args(["update", app_name])
-        .spawn()
-        .map_err(|e| AppError::Config(format!("Failed to spawn update command: {}", e)))?;
-
-    Ok(())
 }
 
 /// Creates a JSON error response.
