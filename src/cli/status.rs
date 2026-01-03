@@ -231,10 +231,11 @@ pub fn status(_verbose: bool) -> Result<(), AppError> {
         match AppConfig::load(name) {
             Ok(config) => {
                 let status = get_app_status(name, config.deployed_at, &runtime, &ctx);
+                let domain = config.primary_domain().to_string();
                 apps.push(AppInfo {
                     name: config.name,
                     status,
-                    domain: config.domain,
+                    domain,
                     stack: config.stack.display_name().to_string(),
                     deployed_at: config.deployed_at,
                 });

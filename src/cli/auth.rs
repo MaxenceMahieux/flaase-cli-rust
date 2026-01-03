@@ -12,30 +12,21 @@ pub fn list(app: &str) -> Result<(), AppError> {
     println!("Authentication for {}", app);
     println!();
 
-    // Currently we only have a single domain per app
-    // When multi-domain support is added, this will iterate over all domains
-    let domain = &config.domain;
+    if config.domains.is_empty() {
+        ui::warning("No domains configured");
+        return Ok(());
+    }
+
     let secrets = SecretsManager::load_secrets(&config.secrets_path())?;
 
-    // Check if auth is configured for this domain
-    let auth_status = if let Some(auth_secret) = secrets.auth.get(domain) {
-        // Extract username from htpasswd line
-        let username = auth_secret
-            .password_hash
-            .split(':')
-            .next()
-            .unwrap_or("unknown");
-        format!(
-            "{} enabled ({})",
-            console::style("\u{2713}").green(),
-            username
-        )
-    } else {
-        format!("{} disabled", console::style("\u{2717}").dim())
-    };
-
     // Calculate column widths
-    let domain_width = domain.len().max(6);
+    let domain_width = config
+        .domains
+        .iter()
+        .map(|d| d.domain.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
 
     // Header
     println!(
@@ -45,13 +36,32 @@ pub fn list(app: &str) -> Result<(), AppError> {
     );
     println!("  {}", "─".repeat(domain_width + 20));
 
-    // Domain row
-    println!(
-        "  {:<width$}   {}",
-        domain,
-        auth_status,
-        width = domain_width
-    );
+    // List all domains with their auth status
+    for domain_config in &config.domains {
+        let domain = &domain_config.domain;
+        let auth_status = if let Some(auth_secret) = secrets.auth.get(domain) {
+            // Extract username from htpasswd line
+            let username = auth_secret
+                .password_hash
+                .split(':')
+                .next()
+                .unwrap_or("unknown");
+            format!(
+                "{} enabled ({})",
+                console::style("\u{2713}").green(),
+                username
+            )
+        } else {
+            format!("{} disabled", console::style("\u{2717}").dim())
+        };
+
+        println!(
+            "  {:<width$}   {}",
+            domain,
+            auth_status,
+            width = domain_width
+        );
+    }
 
     println!();
 
@@ -68,10 +78,11 @@ pub fn add(
     let config = AppConfig::load(app)?;
 
     // Validate domain belongs to this app
-    if config.domain != domain {
+    if !config.domains.iter().any(|d| d.domain == domain) {
+        let configured_domains: Vec<_> = config.domains.iter().map(|d| d.domain.as_str()).collect();
         return Err(AppError::Validation(format!(
-            "Domain '{}' is not configured for app '{}'. Current domain: {}",
-            domain, app, config.domain
+            "Domain '{}' is not configured for app '{}'. Configured domains: {}",
+            domain, app, configured_domains.join(", ")
         )));
     }
 
@@ -127,10 +138,11 @@ pub fn remove(app: &str, domain: &str) -> Result<(), AppError> {
     let config = AppConfig::load(app)?;
 
     // Validate domain belongs to this app
-    if config.domain != domain {
+    if !config.domains.iter().any(|d| d.domain == domain) {
+        let configured_domains: Vec<_> = config.domains.iter().map(|d| d.domain.as_str()).collect();
         return Err(AppError::Validation(format!(
-            "Domain '{}' is not configured for app '{}'. Current domain: {}",
-            domain, app, config.domain
+            "Domain '{}' is not configured for app '{}'. Configured domains: {}",
+            domain, app, configured_domains.join(", ")
         )));
     }
 
@@ -164,10 +176,11 @@ pub fn update(
     let config = AppConfig::load(app)?;
 
     // Validate domain belongs to this app
-    if config.domain != domain {
+    if !config.domains.iter().any(|d| d.domain == domain) {
+        let configured_domains: Vec<_> = config.domains.iter().map(|d| d.domain.as_str()).collect();
         return Err(AppError::Validation(format!(
-            "Domain '{}' is not configured for app '{}'. Current domain: {}",
-            domain, app, config.domain
+            "Domain '{}' is not configured for app '{}'. Configured domains: {}",
+            domain, app, configured_domains.join(", ")
         )));
     }
 
@@ -241,16 +254,16 @@ fn update_traefik_config(config: &AppConfig, secrets: &AppSecrets) -> Result<(),
     // Build domain list with auth info
     let mut domains = Vec::new();
 
-    // Currently single domain, will be extended for multi-domain
-    let domain_name = &config.domain;
-    let mut app_domain = AppDomain::new(domain_name, true);
+    for domain_config in &config.domains {
+        let mut app_domain = AppDomain::new(&domain_config.domain, domain_config.primary);
 
-    // Add auth if configured
-    if let Some(auth_secret) = secrets.auth.get(domain_name) {
-        app_domain = app_domain.with_auth(&auth_secret.password_hash);
+        // Add auth if configured
+        if let Some(auth_secret) = secrets.auth.get(&domain_config.domain) {
+            app_domain = app_domain.with_auth(&auth_secret.password_hash);
+        }
+
+        domains.push(app_domain);
     }
-
-    domains.push(app_domain);
 
     // Generate and write Traefik config
     let traefik_config = generate_app_config(&config.name, &domains, config.effective_port());

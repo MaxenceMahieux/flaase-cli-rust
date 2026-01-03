@@ -4,6 +4,7 @@ pub mod app;
 pub mod auth;
 pub mod autodeploy;
 pub mod deploy;
+pub mod domain;
 pub mod env;
 pub mod logs;
 pub mod server;
@@ -189,8 +190,12 @@ pub enum DomainCommands {
         /// Name of the app
         app: String,
 
-        /// Domain to add
+        /// Domain to add (e.g., api.example.com)
         domain: String,
+
+        /// Skip DNS verification
+        #[arg(long)]
+        skip_dns_check: bool,
     },
 
     /// Remove a domain from an app

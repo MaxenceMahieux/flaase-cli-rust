@@ -116,7 +116,7 @@ impl<'a> Deployer<'a> {
                 self.update_deployed_at()?;
 
                 let duration = start_time.elapsed();
-                let url = format!("https://{}", self.config.domain);
+                let url = format!("https://{}", self.config.primary_domain());
 
                 Ok(DeployResult {
                     app_name: self.config.name.clone(),
@@ -393,15 +393,40 @@ impl<'a> Deployer<'a> {
         Ok(())
     }
 
-    /// Configures Traefik routing.
+    /// Configures Traefik routing for all domains.
     fn configure_routing(&self) -> Result<(), AppError> {
+        use crate::core::secrets::SecretsManager;
+        use crate::templates::traefik::{generate_app_config, AppDomain};
+
         let port = self.config.effective_port();
-        self.proxy.write_app_config(
-            &self.config.name,
-            &self.config.domain,
-            port,
-            self.ctx,
-        )
+
+        // Load secrets for auth info
+        let secrets = SecretsManager::load_secrets(&self.config.secrets_path()).ok();
+
+        // Build domain list with auth info
+        let mut domains = Vec::new();
+        for domain_config in &self.config.domains {
+            let mut app_domain = AppDomain::new(&domain_config.domain, domain_config.primary);
+
+            // Add auth if configured
+            if let Some(ref secrets) = secrets {
+                if let Some(auth_secret) = secrets.auth.get(&domain_config.domain) {
+                    app_domain = app_domain.with_auth(&auth_secret.password_hash);
+                }
+            }
+
+            domains.push(app_domain);
+        }
+
+        // Generate and write Traefik config
+        let traefik_config = generate_app_config(&self.config.name, &domains, port);
+        let traefik_path = format!(
+            "{}/{}.yml",
+            crate::core::FLAASE_TRAEFIK_DYNAMIC_PATH,
+            self.config.name
+        );
+
+        self.ctx.write_file(&traefik_path, &traefik_config)
     }
 
     /// Performs health check on the app.
