@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use flaase::cli::{
-    AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands, EnvCommands, NotifyCommands,
-    ServerCommands, WebhookCommands,
+    ApprovalCommands, AuthCommands, AutodeployCommands, Cli, Commands, DomainCommands,
+    EnvCommands, EnvDeployCommands, HooksCommands, NotifyCommands, ServerCommands, WebhookCommands,
 };
 use flaase::ui;
 
@@ -211,6 +211,122 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
                 window,
             } => {
                 flaase::cli::autodeploy::rate_limit(&app, enable, disable, max_deploys, window)?;
+                Ok(())
+            }
+            AutodeployCommands::Test {
+                app,
+                enable,
+                disable,
+                command,
+                timeout,
+                fail_on_error,
+            } => {
+                flaase::cli::autodeploy::test_config(
+                    &app,
+                    enable,
+                    disable,
+                    command.as_deref(),
+                    timeout,
+                    fail_on_error,
+                )?;
+                Ok(())
+            }
+            AutodeployCommands::Hooks(hooks_cmd) => match hooks_cmd {
+                HooksCommands::List { app } => {
+                    flaase::cli::autodeploy::hooks_list(&app)?;
+                    Ok(())
+                }
+                HooksCommands::Add {
+                    app,
+                    phase,
+                    name,
+                    command,
+                    timeout,
+                    required,
+                    in_container,
+                } => {
+                    flaase::cli::autodeploy::hooks_add(
+                        &app,
+                        &phase,
+                        &name,
+                        &command,
+                        Some(timeout),
+                        required,
+                        in_container,
+                    )?;
+                    Ok(())
+                }
+                HooksCommands::Remove { app, phase, name } => {
+                    flaase::cli::autodeploy::hooks_remove(&app, &phase, &name)?;
+                    Ok(())
+                }
+            },
+            AutodeployCommands::RollbackConfig {
+                app,
+                enable,
+                disable,
+                keep_versions,
+                auto_rollback,
+            } => {
+                flaase::cli::autodeploy::rollback_config(
+                    &app,
+                    enable,
+                    disable,
+                    keep_versions,
+                    auto_rollback,
+                )?;
+                Ok(())
+            }
+            AutodeployCommands::Env(env_cmd) => match env_cmd {
+                EnvDeployCommands::List { app } => {
+                    flaase::cli::autodeploy::env_list(&app)?;
+                    Ok(())
+                }
+                EnvDeployCommands::Add {
+                    app,
+                    name,
+                    branch,
+                    auto_deploy,
+                    domain,
+                } => {
+                    flaase::cli::autodeploy::env_add(&app, &name, &branch, auto_deploy, domain)?;
+                    Ok(())
+                }
+                EnvDeployCommands::Remove { app, name } => {
+                    flaase::cli::autodeploy::env_remove(&app, &name)?;
+                    Ok(())
+                }
+            },
+            AutodeployCommands::Approval(approval_cmd) => match approval_cmd {
+                ApprovalCommands::Config {
+                    app,
+                    enable,
+                    disable,
+                    timeout,
+                } => {
+                    flaase::cli::autodeploy::approval_config(&app, enable, disable, timeout)?;
+                    Ok(())
+                }
+                ApprovalCommands::Pending { app } => {
+                    flaase::cli::autodeploy::approval_pending(&app)?;
+                    Ok(())
+                }
+                ApprovalCommands::Approve { app, approval_id } => {
+                    flaase::cli::autodeploy::approval_approve(&app, approval_id.as_deref())?;
+                    Ok(())
+                }
+                ApprovalCommands::Reject { app, approval_id } => {
+                    flaase::cli::autodeploy::approval_reject(&app, approval_id.as_deref())?;
+                    Ok(())
+                }
+            },
+            AutodeployCommands::Build {
+                app,
+                cache,
+                buildkit,
+                cache_from,
+            } => {
+                flaase::cli::autodeploy::build_config(&app, cache, buildkit, cache_from.as_deref())?;
                 Ok(())
             }
         },

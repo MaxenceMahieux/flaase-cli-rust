@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tiny_http::{Response, Server, StatusCode};
 
-use crate::core::app_config::AppConfig;
-use crate::core::deployments::{DeploymentHistory, DeploymentRecord, DeploymentStatus};
+use crate::core::app_config::{AppConfig, EnvironmentConfig};
+use crate::core::deployments::{DeploymentHistory, DeploymentRecord, DeploymentStatus, PendingApproval};
 use crate::core::notifications::{send_notifications, DeploymentEvent};
 use crate::core::error::AppError;
 use crate::core::secrets::SecretsManager;
@@ -128,6 +128,131 @@ impl DeploymentLock {
 
         false
     }
+}
+
+/// Pending approvals storage.
+struct PendingApprovalsStore;
+
+impl PendingApprovalsStore {
+    /// Returns the path to pending approvals file for an app.
+    fn path(app_name: &str) -> PathBuf {
+        PathBuf::from(format!("{}/{}/pending_approvals.json", FLAASE_APPS_PATH, app_name))
+    }
+
+    /// Loads pending approvals for an app.
+    fn load(app_name: &str) -> Result<Vec<PendingApproval>, AppError> {
+        let path = Self::path(app_name);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read_to_string(&path)
+            .map_err(|e| AppError::Config(format!("Failed to read pending approvals: {}", e)))?;
+
+        serde_json::from_str(&content)
+            .map_err(|e| AppError::Config(format!("Failed to parse pending approvals: {}", e)))
+    }
+
+    /// Saves pending approvals for an app.
+    fn save(app_name: &str, approvals: &[PendingApproval]) -> Result<(), AppError> {
+        let path = Self::path(app_name);
+        let content = serde_json::to_string_pretty(approvals)
+            .map_err(|e| AppError::Config(format!("Failed to serialize pending approvals: {}", e)))?;
+
+        fs::write(&path, content)
+            .map_err(|e| AppError::Config(format!("Failed to write pending approvals: {}", e)))
+    }
+
+    /// Adds a new pending approval.
+    fn add(app_name: &str, approval: PendingApproval) -> Result<(), AppError> {
+        let mut approvals = Self::load(app_name)?;
+
+        // Remove expired approvals
+        approvals.retain(|a| !a.is_expired());
+
+        // Add new approval
+        approvals.push(approval);
+
+        Self::save(app_name, &approvals)
+    }
+
+    /// Gets a pending approval by ID or the latest one.
+    pub fn get(app_name: &str, approval_id: Option<&str>) -> Result<Option<PendingApproval>, AppError> {
+        let mut approvals = Self::load(app_name)?;
+
+        // Remove expired approvals
+        approvals.retain(|a| !a.is_expired());
+        Self::save(app_name, &approvals)?;
+
+        match approval_id {
+            Some(id) => Ok(approvals.into_iter().find(|a| a.approval_id == id)),
+            None => Ok(approvals.into_iter().next()),
+        }
+    }
+
+    /// Removes a pending approval by ID.
+    pub fn remove(app_name: &str, approval_id: &str) -> Result<(), AppError> {
+        let mut approvals = Self::load(app_name)?;
+        approvals.retain(|a| a.approval_id != approval_id);
+        Self::save(app_name, &approvals)
+    }
+
+    /// Lists all pending approvals for an app.
+    pub fn list(app_name: &str) -> Result<Vec<PendingApproval>, AppError> {
+        let mut approvals = Self::load(app_name)?;
+
+        // Remove expired approvals
+        let before_len = approvals.len();
+        approvals.retain(|a| !a.is_expired());
+
+        // Save if any were removed
+        if approvals.len() != before_len {
+            Self::save(app_name, &approvals)?;
+        }
+
+        Ok(approvals)
+    }
+}
+
+/// Determines the target environment based on the branch.
+fn determine_environment<'a>(
+    branch: &str,
+    environments: Option<&'a Vec<EnvironmentConfig>>,
+) -> (String, Option<&'a EnvironmentConfig>) {
+    match environments {
+        Some(envs) => {
+            // Find environment matching this branch
+            if let Some(env) = envs.iter().find(|e| e.branch == branch) {
+                (env.name.clone(), Some(env))
+            } else {
+                // Default to production if no match
+                ("production".to_string(), None)
+            }
+        }
+        None => ("production".to_string(), None),
+    }
+}
+
+/// Checks if deployment requires approval.
+fn requires_approval(
+    env_config: Option<&EnvironmentConfig>,
+    approval_config: Option<&crate::core::app_config::ApprovalConfig>,
+) -> bool {
+    // If environment config exists and auto_deploy is false, require approval
+    if let Some(env) = env_config {
+        if !env.auto_deploy {
+            return true;
+        }
+    }
+
+    // If approval config exists and is enabled, require approval
+    if let Some(approval) = approval_config {
+        if approval.enabled {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Default port for the webhook server.
@@ -352,10 +477,20 @@ fn handle_webhook(
         }
     };
 
-    if branch != autodeploy_config.branch {
+    // Determine target environment based on branch
+    let (environment, env_config) = determine_environment(
+        branch,
+        autodeploy_config.environments.as_ref(),
+    );
+
+    // Check if this branch should trigger deployment
+    // Either it's the main autodeploy branch OR it's mapped to an environment
+    let should_deploy = branch == autodeploy_config.branch || env_config.is_some();
+
+    if !should_deploy {
         if verbose {
             println!(
-                "  {} Ignoring push to {} (watching {})",
+                "  {} Ignoring push to {} (watching {} and no environment mapping)",
                 console::style("-").dim(),
                 branch,
                 autodeploy_config.branch
@@ -363,6 +498,15 @@ fn handle_webhook(
         }
         let _ = request.respond(json_response(200, &format!("Ignored branch: {}", branch)));
         return;
+    }
+
+    if verbose && env_config.is_some() {
+        println!(
+            "  {} Branch {} mapped to environment {}",
+            console::style("\u{279C}").cyan(),
+            console::style(branch).yellow(),
+            console::style(&environment).green()
+        );
     }
 
     // Check rate limiting
@@ -416,6 +560,82 @@ fn handle_webhook(
         .unwrap_or("unknown")
         .to_string();
 
+    // Check if this deployment requires approval
+    let needs_approval = requires_approval(env_config, autodeploy_config.approval.as_ref());
+
+    if needs_approval {
+        let timeout_minutes = autodeploy_config
+            .approval
+            .as_ref()
+            .map(|a| a.timeout_minutes)
+            .unwrap_or(60);
+
+        let approval = PendingApproval::new(
+            &app_config.name,
+            &commit_sha,
+            &commit_msg,
+            branch,
+            &environment,
+            &pusher,
+            timeout_minutes,
+        );
+
+        println!(
+            "  {} Deployment for {} requires approval (env: {})",
+            console::style("\u{23F3}").yellow(),
+            console::style(&app_config.name).bold(),
+            console::style(&environment).cyan()
+        );
+
+        // Save pending approval
+        if let Err(e) = PendingApprovalsStore::add(&app_config.name, approval.clone()) {
+            ui::error(&format!("Failed to save pending approval: {}", e));
+            let _ = request.respond(json_error(500, "Failed to save approval request"));
+            return;
+        }
+
+        // Log deployment with pending approval status
+        let deployment_record = DeploymentRecord::from_webhook(
+            &commit_sha,
+            &commit_msg,
+            branch,
+            &pusher,
+            &environment,
+        );
+        let mut record = deployment_record;
+        record.status = DeploymentStatus::PendingApproval;
+
+        if let Err(e) = log_deployment(&app_config, record) {
+            if verbose {
+                ui::warning(&format!("Failed to log deployment: {}", e));
+            }
+        }
+
+        // Send notification for pending approval
+        if let Some(ref notif) = autodeploy_config.notifications {
+            let event = DeploymentEvent {
+                app_name: app_config.name.clone(),
+                commit_sha: commit_sha.clone(),
+                commit_message: commit_msg.clone(),
+                branch: branch.to_string(),
+                triggered_by: pusher.clone(),
+                status: DeploymentStatus::PendingApproval,
+                duration_secs: None,
+                error_message: None,
+            };
+            let _ = send_notifications(notif, &event);
+        }
+
+        let _ = request.respond(json_response(
+            202,
+            &format!(
+                "Awaiting approval. ID: {}. Run: fl autodeploy approve {} {}",
+                approval.approval_id, app_config.name, approval.approval_id
+            ),
+        ));
+        return;
+    }
+
     println!(
         "  {} Deploying {} @ {} - {}",
         console::style("\u{279C}").cyan(),
@@ -430,6 +650,7 @@ fn handle_webhook(
         &commit_msg,
         branch,
         &pusher,
+        &environment,
     );
 
     if let Err(e) = log_deployment(&app_config, deployment_record) {
@@ -805,6 +1026,127 @@ pub fn is_running() -> bool {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().eq("active"))
         .unwrap_or(false)
+}
+
+/// Approves a pending deployment.
+pub fn approve_deployment(app_name: &str, approval_id: Option<&str>) -> Result<(), AppError> {
+    let approval = match PendingApprovalsStore::get(app_name, approval_id)? {
+        Some(a) => a,
+        None => {
+            return Err(AppError::Approval("No pending approval found".into()));
+        }
+    };
+
+    if approval.is_expired() {
+        PendingApprovalsStore::remove(app_name, &approval.approval_id)?;
+        return Err(AppError::Approval("Approval request has expired".into()));
+    }
+
+    ui::success(&format!(
+        "Approved deployment {} for {} (env: {})",
+        approval.approval_id, app_name, approval.environment
+    ));
+
+    println!(
+        "  Commit: {} - {}",
+        console::style(&approval.commit_sha).yellow(),
+        &approval.commit_message
+    );
+
+    // Remove pending approval
+    PendingApprovalsStore::remove(app_name, &approval.approval_id)?;
+
+    // Update deployment status
+    let config = AppConfig::load(app_name)?;
+    let path = config.deployments_path();
+    if let Ok(mut history) = DeploymentHistory::load(&path) {
+        history.update_latest_status(DeploymentStatus::Triggered);
+        let _ = history.save(&path);
+    }
+
+    // Trigger deployment
+    ui::step("Starting deployment...");
+    run_deployment(app_name)?;
+
+    ui::success("Deployment completed successfully!");
+
+    Ok(())
+}
+
+/// Rejects a pending deployment.
+pub fn reject_deployment(app_name: &str, approval_id: Option<&str>) -> Result<(), AppError> {
+    let approval = match PendingApprovalsStore::get(app_name, approval_id)? {
+        Some(a) => a,
+        None => {
+            return Err(AppError::Approval("No pending approval found".into()));
+        }
+    };
+
+    // Remove pending approval
+    PendingApprovalsStore::remove(app_name, &approval.approval_id)?;
+
+    // Update deployment status to failed
+    let config = AppConfig::load(app_name)?;
+    let path = config.deployments_path();
+    if let Ok(mut history) = DeploymentHistory::load(&path) {
+        history.update_latest_status(DeploymentStatus::Failed);
+        let _ = history.save(&path);
+    }
+
+    ui::info(&format!(
+        "Rejected deployment {} for {}",
+        approval.approval_id, app_name
+    ));
+
+    Ok(())
+}
+
+/// Lists pending approvals for an app.
+pub fn list_pending_approvals(app_name: &str) -> Result<(), AppError> {
+    let approvals = PendingApprovalsStore::list(app_name)?;
+
+    if approvals.is_empty() {
+        ui::info(&format!("No pending approvals for {}", app_name));
+        return Ok(());
+    }
+
+    println!("Pending approvals for {}:", console::style(app_name).bold());
+    println!();
+
+    for approval in approvals {
+        let expires_in = approval.expires_at.signed_duration_since(chrono::Utc::now());
+        let expires_str = if expires_in.num_minutes() > 0 {
+            format!("{}m", expires_in.num_minutes())
+        } else {
+            "expired".to_string()
+        };
+
+        println!(
+            "  {} {} @ {} (env: {}, expires: {})",
+            console::style(&approval.approval_id).cyan(),
+            console::style(&approval.branch).dim(),
+            console::style(&approval.commit_sha).yellow(),
+            console::style(&approval.environment).green(),
+            if expires_in.num_minutes() > 0 {
+                console::style(&expires_str).dim()
+            } else {
+                console::style(&expires_str).red()
+            }
+        );
+        println!("    {} by {}", &approval.commit_message, &approval.requested_by);
+    }
+
+    println!();
+    println!(
+        "To approve: {}",
+        console::style(format!("fl autodeploy approve {} <approval-id>", app_name)).cyan()
+    );
+    println!(
+        "To reject:  {}",
+        console::style(format!("fl autodeploy reject {} <approval-id>", app_name)).cyan()
+    );
+
+    Ok(())
 }
 
 /// Shows the webhook server status.

@@ -507,7 +507,7 @@ pub struct DomainAuth {
 pub struct AutodeployConfig {
     /// Whether autodeploy is enabled.
     pub enabled: bool,
-    /// Branch to watch for deployments.
+    /// Branch to watch for deployments (used when environments is not configured).
     #[serde(default = "AutodeployConfig::default_branch")]
     pub branch: String,
     /// Webhook endpoint path (unique per app).
@@ -518,6 +518,24 @@ pub struct AutodeployConfig {
     /// Notification configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationConfig>,
+    /// Test execution configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<TestConfig>,
+    /// Pre/post deployment hooks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<HooksConfig>,
+    /// Rollback configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback: Option<RollbackConfig>,
+    /// Multi-environment configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<Vec<EnvironmentConfig>>,
+    /// Manual approval gates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalConfig>,
+    /// Docker build configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildConfig>,
 }
 
 impl AutodeployConfig {
@@ -532,6 +550,12 @@ impl AutodeployConfig {
             webhook_path: webhook_path.to_string(),
             rate_limit: Some(RateLimitConfig::default()),
             notifications: None,
+            tests: None,
+            hooks: None,
+            rollback: None,
+            environments: None,
+            approval: None,
+            build: None,
         }
     }
 
@@ -664,6 +688,243 @@ impl Default for NotificationEvents {
             on_start: Self::default_on_start(),
             on_success: Self::default_on_success(),
             on_failure: Self::default_on_failure(),
+        }
+    }
+}
+
+// ============================================================================
+// CI/CD Configuration Structures
+// ============================================================================
+
+/// Test execution configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestConfig {
+    /// Whether tests are enabled.
+    #[serde(default = "TestConfig::default_enabled")]
+    pub enabled: bool,
+    /// Test command to run (e.g., "npm test", "composer test").
+    #[serde(default = "TestConfig::default_command")]
+    pub command: String,
+    /// Timeout in seconds (default: 300 = 5 min).
+    #[serde(default = "TestConfig::default_timeout")]
+    pub timeout_seconds: u64,
+    /// Whether to fail deployment if tests fail.
+    #[serde(default = "TestConfig::default_fail_on_error")]
+    pub fail_deployment_on_error: bool,
+}
+
+impl TestConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_command() -> String {
+        "npm test".to_string()
+    }
+
+    fn default_timeout() -> u64 {
+        300
+    }
+
+    fn default_fail_on_error() -> bool {
+        true
+    }
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            command: Self::default_command(),
+            timeout_seconds: Self::default_timeout(),
+            fail_deployment_on_error: Self::default_fail_on_error(),
+        }
+    }
+}
+
+/// Pre/Post deployment hooks configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HooksConfig {
+    /// Hooks to run before Docker build.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_build: Vec<HookCommand>,
+    /// Hooks to run after build, before container swap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_deploy: Vec<HookCommand>,
+    /// Hooks to run after successful deployment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_deploy: Vec<HookCommand>,
+    /// Hooks to run on deployment failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_failure: Vec<HookCommand>,
+}
+
+/// Individual hook command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookCommand {
+    /// Human-readable name for the hook.
+    pub name: String,
+    /// Command to execute.
+    pub command: String,
+    /// Timeout in seconds.
+    #[serde(default = "HookCommand::default_timeout")]
+    pub timeout_seconds: u64,
+    /// Whether deployment should fail if this hook fails.
+    #[serde(default = "HookCommand::default_required")]
+    pub required: bool,
+    /// Run inside the app container (vs on host).
+    #[serde(default)]
+    pub run_in_container: bool,
+}
+
+impl HookCommand {
+    fn default_timeout() -> u64 {
+        60
+    }
+
+    fn default_required() -> bool {
+        true
+    }
+
+    pub fn new(name: &str, command: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_seconds: Self::default_timeout(),
+            required: Self::default_required(),
+            run_in_container: false,
+        }
+    }
+}
+
+/// Rollback configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackConfig {
+    /// Whether rollback is enabled.
+    #[serde(default = "RollbackConfig::default_enabled")]
+    pub enabled: bool,
+    /// Number of previous versions to keep.
+    #[serde(default = "RollbackConfig::default_keep_versions")]
+    pub keep_versions: u32,
+    /// Whether to auto-rollback on health check failure.
+    #[serde(default = "RollbackConfig::default_auto_rollback")]
+    pub auto_rollback_on_failure: bool,
+}
+
+impl RollbackConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_keep_versions() -> u32 {
+        3
+    }
+
+    fn default_auto_rollback() -> bool {
+        true
+    }
+}
+
+impl Default for RollbackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            keep_versions: Self::default_keep_versions(),
+            auto_rollback_on_failure: Self::default_auto_rollback(),
+        }
+    }
+}
+
+/// Environment configuration for multi-environment deployments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentConfig {
+    /// Environment name (e.g., "staging", "production").
+    pub name: String,
+    /// Git branch that triggers this environment.
+    pub branch: String,
+    /// Domains for this environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
+    /// Whether to auto-deploy or require approval.
+    #[serde(default = "EnvironmentConfig::default_auto_deploy")]
+    pub auto_deploy: bool,
+}
+
+impl EnvironmentConfig {
+    fn default_auto_deploy() -> bool {
+        true
+    }
+
+    pub fn new(name: &str, branch: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            branch: branch.to_string(),
+            domains: Vec::new(),
+            auto_deploy: Self::default_auto_deploy(),
+        }
+    }
+}
+
+/// Manual approval gates configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalConfig {
+    /// Whether approval gates are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Timeout in minutes for approval requests.
+    #[serde(default = "ApprovalConfig::default_timeout")]
+    pub timeout_minutes: u64,
+    /// Channels to notify for approval requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notify_channels: Vec<String>,
+}
+
+impl ApprovalConfig {
+    fn default_timeout() -> u64 {
+        60
+    }
+}
+
+impl Default for ApprovalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_minutes: Self::default_timeout(),
+            notify_channels: Vec::new(),
+        }
+    }
+}
+
+/// Docker build optimization configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildConfig {
+    /// Whether Docker build caching is enabled.
+    #[serde(default = "BuildConfig::default_cache_enabled")]
+    pub cache_enabled: bool,
+    /// Whether to use BuildKit for improved caching.
+    #[serde(default = "BuildConfig::default_buildkit")]
+    pub buildkit: bool,
+    /// Optional registry for cache-from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_from: Option<String>,
+}
+
+impl BuildConfig {
+    fn default_cache_enabled() -> bool {
+        true
+    }
+
+    fn default_buildkit() -> bool {
+        true
+    }
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            cache_enabled: Self::default_cache_enabled(),
+            buildkit: Self::default_buildkit(),
+            cache_from: None,
         }
     }
 }

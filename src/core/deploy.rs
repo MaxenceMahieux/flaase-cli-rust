@@ -15,28 +15,45 @@ use crate::providers::reverse_proxy::ReverseProxy;
 use crate::templates::dockerfile;
 use crate::ui;
 
+/// Hook execution phase.
+#[derive(Debug, Clone, Copy)]
+pub enum HookPhase {
+    PreBuild,
+    PreDeploy,
+    PostDeploy,
+    OnFailure,
+}
+
 /// Deployment step for progress tracking.
 #[derive(Debug, Clone, Copy)]
 pub enum DeployStep {
     CloneRepository,
+    PreBuildHooks,
     BuildImage,
+    RunTests,
+    PreDeployHooks,
     StartDatabase,
     StartCache,
     StartApp,
     ConfigureRouting,
     HealthCheck,
+    PostDeployHooks,
 }
 
 impl DeployStep {
     pub fn display_name(&self) -> &str {
         match self {
             Self::CloneRepository => "Cloning repository",
+            Self::PreBuildHooks => "Running pre-build hooks",
             Self::BuildImage => "Building image",
+            Self::RunTests => "Running tests",
+            Self::PreDeployHooks => "Running pre-deploy hooks",
             Self::StartDatabase => "Starting database",
             Self::StartCache => "Starting cache",
             Self::StartApp => "Starting app",
             Self::ConfigureRouting => "Configuring routing",
             Self::HealthCheck => "Health check",
+            Self::PostDeployHooks => "Running post-deploy hooks",
         }
     }
 }
@@ -98,9 +115,51 @@ impl<'a> Deployer<'a> {
         format!("{}-cache", self.container_prefix())
     }
 
-    /// Image name for this app.
+    /// Base image name for this app.
     fn image_name(&self) -> String {
         format!("flaase-{}", self.config.name)
+    }
+
+    /// Current (latest) image tag.
+    fn current_image_tag(&self) -> String {
+        format!("{}:latest", self.image_name())
+    }
+
+    /// Previous image tag (for rollback).
+    fn previous_image_tag(&self) -> String {
+        format!("{}:previous", self.image_name())
+    }
+
+    /// Versioned image tag using commit SHA.
+    fn versioned_image_tag(&self, commit_sha: &str) -> String {
+        let short_sha = if commit_sha.len() >= 7 {
+            &commit_sha[..7]
+        } else {
+            commit_sha
+        };
+        format!("{}:{}", self.image_name(), short_sha)
+    }
+
+    /// Checks if an image exists.
+    fn image_exists(&self, tag: &str) -> Result<bool, AppError> {
+        let result = self.ctx.run_command("docker", &["image", "inspect", tag]);
+        Ok(result.is_ok() && result.unwrap().success)
+    }
+
+    /// Tags an image.
+    fn tag_image(&self, source: &str, target: &str) -> Result<(), AppError> {
+        if self.ctx.is_dry_run() {
+            ui::info(&format!("[DRY-RUN] docker tag {} {}", source, target));
+            return Ok(());
+        }
+        self.ctx.run_command("docker", &["tag", source, target])?
+            .ensure_success("Failed to tag image")?;
+        Ok(())
+    }
+
+    /// Gets the current commit SHA from the repo.
+    fn get_commit_sha(&self, repo_path: &Path) -> Result<String, AppError> {
+        GitProvider::get_commit_hash(repo_path)
     }
 
     /// Executes a full deployment.
@@ -126,6 +185,29 @@ impl<'a> Deployer<'a> {
                 })
             }
             Err(e) => {
+                // Run failure hooks if configured
+                if self.has_hooks(HookPhase::OnFailure) {
+                    ui::warning("Running failure hooks...");
+                    let _ = self.run_hooks(HookPhase::OnFailure, &repo_path);
+                }
+
+                // Attempt auto-rollback if enabled and previous version exists
+                if self.should_auto_rollback() && self.can_rollback() {
+                    ui::warning("Deployment failed, attempting auto-rollback...");
+                    match self.rollback(None) {
+                        Ok(_) => {
+                            ui::success("Auto-rollback successful");
+                            return Err(AppError::Deploy(format!(
+                                "Deployment failed but auto-rollback succeeded. Original error: {}",
+                                e
+                            )));
+                        }
+                        Err(rb_err) => {
+                            ui::error(&format!("Auto-rollback failed: {}", rb_err));
+                        }
+                    }
+                }
+
                 // Cleanup on failure
                 self.cleanup_on_failure();
                 Err(e)
@@ -140,42 +222,70 @@ impl<'a> Deployer<'a> {
         self.sync_repository(repo_path)?;
         spinner.finish("done");
 
-        // Step 2: Build Docker image
+        // Step 2: Run pre-build hooks
+        if self.has_hooks(HookPhase::PreBuild) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PreBuildHooks.display_name());
+            self.run_hooks(HookPhase::PreBuild, repo_path)?;
+            spinner.finish("done");
+        }
+
+        // Step 3: Build Docker image
         let spinner = ui::ProgressBar::spinner(DeployStep::BuildImage.display_name());
-        self.build_image(repo_path)?;
+        let _commit_sha = self.build_image(repo_path)?;
         spinner.finish("done");
+
+        // Step 4: Run tests
+        if self.has_tests_enabled() {
+            let spinner = ui::ProgressBar::spinner(DeployStep::RunTests.display_name());
+            self.run_tests(repo_path)?;
+            spinner.finish("done");
+        }
+
+        // Step 5: Run pre-deploy hooks
+        if self.has_hooks(HookPhase::PreDeploy) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PreDeployHooks.display_name());
+            self.run_hooks(HookPhase::PreDeploy, repo_path)?;
+            spinner.finish("done");
+        }
 
         // Create network
         self.runtime.create_network(&self.network_name(), self.ctx)?;
 
-        // Step 3: Start database (if configured)
+        // Step 6: Start database (if configured)
         if self.config.database.is_some() {
             let spinner = ui::ProgressBar::spinner(DeployStep::StartDatabase.display_name());
             self.start_database()?;
             spinner.finish("done");
         }
 
-        // Step 4: Start cache (if configured)
+        // Step 7: Start cache (if configured)
         if self.config.cache.is_some() {
             let spinner = ui::ProgressBar::spinner(DeployStep::StartCache.display_name());
             self.start_cache()?;
             spinner.finish("done");
         }
 
-        // Step 5: Start app container
+        // Step 8: Start app container
         let spinner = ui::ProgressBar::spinner(DeployStep::StartApp.display_name());
         self.start_app()?;
         spinner.finish("done");
 
-        // Step 6: Configure Traefik routing
+        // Step 9: Configure Traefik routing
         let spinner = ui::ProgressBar::spinner(DeployStep::ConfigureRouting.display_name());
         self.configure_routing()?;
         spinner.finish("done");
 
-        // Step 7: Health check
+        // Step 10: Health check
         let spinner = ui::ProgressBar::spinner(DeployStep::HealthCheck.display_name());
         self.health_check()?;
         spinner.finish("done");
+
+        // Step 11: Run post-deploy hooks
+        if self.has_hooks(HookPhase::PostDeploy) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PostDeployHooks.display_name());
+            self.run_hooks(HookPhase::PostDeploy, repo_path)?;
+            spinner.finish("done");
+        }
 
         Ok(())
     }
@@ -213,8 +323,170 @@ impl<'a> Deployer<'a> {
         Ok(())
     }
 
-    /// Builds the Docker image.
-    fn build_image(&self, repo_path: &Path) -> Result<(), AppError> {
+    // ========================================================================
+    // Test Execution
+    // ========================================================================
+
+    /// Checks if tests are enabled for this app.
+    fn has_tests_enabled(&self) -> bool {
+        self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.tests.as_ref())
+            .map(|t| t.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Runs tests for the app.
+    fn run_tests(&self, repo_path: &Path) -> Result<(), AppError> {
+        let test_config = self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.tests.as_ref())
+            .ok_or_else(|| AppError::TestsFailed("Test config not found".into()))?;
+
+        if !test_config.enabled {
+            return Ok(());
+        }
+
+        if self.ctx.is_dry_run() {
+            ui::info(&format!("[DRY-RUN] Run tests: {}", test_config.command));
+            return Ok(());
+        }
+
+        ui::info(&format!("Running: {}", test_config.command));
+
+        let output = std::process::Command::new("sh")
+            .current_dir(repo_path)
+            .args(["-c", &test_config.command])
+            .output()
+            .map_err(|e| AppError::TestsFailed(format!("Failed to execute tests: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let error_output = if !stderr.is_empty() {
+                stderr.to_string()
+            } else {
+                stdout.to_string()
+            };
+
+            if test_config.fail_deployment_on_error {
+                return Err(AppError::TestsFailed(format!(
+                    "Tests failed:\n{}",
+                    error_output.lines().take(20).collect::<Vec<_>>().join("\n")
+                )));
+            } else {
+                ui::warning(&format!("Tests failed (non-blocking): {}", error_output.lines().next().unwrap_or("")));
+            }
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Hooks System
+    // ========================================================================
+
+    /// Checks if hooks are configured for a phase.
+    fn has_hooks(&self, phase: HookPhase) -> bool {
+        self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.hooks.as_ref())
+            .map(|h| match phase {
+                HookPhase::PreBuild => !h.pre_build.is_empty(),
+                HookPhase::PreDeploy => !h.pre_deploy.is_empty(),
+                HookPhase::PostDeploy => !h.post_deploy.is_empty(),
+                HookPhase::OnFailure => !h.on_failure.is_empty(),
+            })
+            .unwrap_or(false)
+    }
+
+    /// Runs hooks for a phase.
+    fn run_hooks(&self, phase: HookPhase, repo_path: &Path) -> Result<(), AppError> {
+        let hooks_config = self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.hooks.as_ref());
+
+        let hooks = match hooks_config {
+            Some(h) => match phase {
+                HookPhase::PreBuild => &h.pre_build,
+                HookPhase::PreDeploy => &h.pre_deploy,
+                HookPhase::PostDeploy => &h.post_deploy,
+                HookPhase::OnFailure => &h.on_failure,
+            },
+            None => return Ok(()),
+        };
+
+        for hook in hooks {
+            ui::info(&format!("  Hook: {}", hook.name));
+
+            let result = if hook.run_in_container {
+                self.run_hook_in_container(hook)
+            } else {
+                self.run_hook_on_host(hook, repo_path)
+            };
+
+            match result {
+                Ok(_) => {
+                    ui::success(&format!("    {} completed", hook.name));
+                }
+                Err(e) if hook.required => {
+                    return Err(AppError::HookFailed(format!("{}: {}", hook.name, e)));
+                }
+                Err(e) => {
+                    ui::warning(&format!("    {} failed (non-blocking): {}", hook.name, e));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Runs a hook on the host (in the repo directory).
+    fn run_hook_on_host(&self, hook: &crate::core::app_config::HookCommand, repo_path: &Path) -> Result<(), AppError> {
+        if self.ctx.is_dry_run() {
+            ui::info(&format!("[DRY-RUN] Run hook: {}", hook.command));
+            return Ok(());
+        }
+
+        let output = std::process::Command::new("sh")
+            .current_dir(repo_path)
+            .args(["-c", &hook.command])
+            .output()
+            .map_err(|e| AppError::HookFailed(format!("Failed to execute: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::HookFailed(stderr.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Runs a hook inside the app container.
+    fn run_hook_in_container(&self, hook: &crate::core::app_config::HookCommand) -> Result<(), AppError> {
+        let container_name = self.web_container_name();
+
+        if !self.runtime.container_is_running(&container_name, self.ctx)? {
+            return Err(AppError::HookFailed("Container not running".into()));
+        }
+
+        self.runtime.exec_in_container(
+            &container_name,
+            &["sh", "-c", &hook.command],
+            self.ctx,
+        )?;
+
+        Ok(())
+    }
+
+    /// Builds the Docker image with caching and versioning.
+    fn build_image(&self, repo_path: &Path) -> Result<String, AppError> {
+        // Get commit SHA for versioning
+        let commit_sha = self.get_commit_sha(repo_path)?;
+        let versioned_tag = self.versioned_image_tag(&commit_sha);
+        let latest_tag = self.current_image_tag();
+        let previous_tag = self.previous_image_tag();
+
         // Check if Dockerfile exists, otherwise generate one
         if !dockerfile::exists(repo_path) {
             let port = self.config.effective_port();
@@ -229,14 +501,50 @@ impl<'a> Deployer<'a> {
             }
         }
 
-        // Build the image
-        self.runtime.build_image(
-            &self.image_name(),
-            repo_path.to_str().unwrap(),
-            self.ctx,
-        )?;
+        // Backup current image as previous (for rollback)
+        if self.image_exists(&latest_tag)? {
+            self.tag_image(&latest_tag, &previous_tag)?;
+        }
 
-        Ok(())
+        // Get build config
+        let build_config = self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.build.as_ref());
+
+        // Build with caching if enabled
+        let use_buildkit = build_config
+            .map(|bc| bc.buildkit)
+            .unwrap_or(true);
+        let use_cache = build_config
+            .map(|bc| bc.cache_enabled)
+            .unwrap_or(true);
+
+        if self.ctx.is_dry_run() {
+            ui::info(&format!("[DRY-RUN] Build image {} with BUILDKIT={}", versioned_tag, use_buildkit));
+        } else {
+            // Set BuildKit environment variable if enabled
+            if use_buildkit {
+                std::env::set_var("DOCKER_BUILDKIT", "1");
+            }
+
+            // Build command with cache-from if enabled
+            let mut args = vec!["build", "-t", &versioned_tag];
+
+            if use_cache && self.image_exists(&latest_tag)? {
+                args.push("--cache-from");
+                args.push(&latest_tag);
+            }
+
+            args.push(repo_path.to_str().unwrap());
+
+            self.ctx.run_command_streaming("docker", &args)?
+                .ensure_success("Failed to build Docker image")?;
+
+            // Tag as latest
+            self.tag_image(&versioned_tag, &latest_tag)?;
+        }
+
+        Ok(commit_sha)
     }
 
     /// Starts the database container.
@@ -561,6 +869,83 @@ impl<'a> Deployer<'a> {
         self.health_check()?;
 
         Ok(())
+    }
+
+    // ========================================================================
+    // Rollback System
+    // ========================================================================
+
+    /// Checks if rollback is enabled and should be performed.
+    fn should_auto_rollback(&self) -> bool {
+        self.config.autodeploy_config
+            .as_ref()
+            .and_then(|ad| ad.rollback.as_ref())
+            .map(|r| r.enabled && r.auto_rollback_on_failure)
+            .unwrap_or(false)
+    }
+
+    /// Checks if a previous image exists for rollback.
+    pub fn can_rollback(&self) -> bool {
+        self.image_exists(&self.previous_image_tag()).unwrap_or(false)
+    }
+
+    /// Rolls back to the previous deployment.
+    pub fn rollback(&self, target_sha: Option<&str>) -> Result<(), AppError> {
+        let target_tag = match target_sha {
+            Some(sha) => self.versioned_image_tag(sha),
+            None => self.previous_image_tag(),
+        };
+
+        if !self.image_exists(&target_tag)? {
+            return Err(AppError::RollbackFailed(
+                "No previous version available for rollback".into()
+            ));
+        }
+
+        ui::info(&format!("Rolling back to image: {}", target_tag));
+
+        // Tag rollback target as latest
+        let latest_tag = self.current_image_tag();
+        self.tag_image(&target_tag, &latest_tag)?;
+
+        // Restart app with rolled-back image
+        let spinner = ui::ProgressBar::spinner("Restarting app with previous version");
+        self.start_app()?;
+        spinner.finish("done");
+
+        // Reconfigure routing
+        let spinner = ui::ProgressBar::spinner("Reconfiguring routing");
+        self.configure_routing()?;
+        spinner.finish("done");
+
+        // Health check
+        let spinner = ui::ProgressBar::spinner("Running health check");
+        self.health_check()?;
+        spinner.finish("done");
+
+        ui::success("Rollback completed successfully");
+
+        Ok(())
+    }
+
+    /// Lists available versions for rollback.
+    pub fn list_available_versions(&self) -> Result<Vec<String>, AppError> {
+        let output = self.ctx.run_command(
+            "docker",
+            &["images", &self.image_name(), "--format", "{{.Tag}}"]
+        )?;
+
+        if !output.success {
+            return Ok(Vec::new());
+        }
+
+        let versions: Vec<String> = output.stdout
+            .lines()
+            .filter(|t| !t.is_empty() && *t != "latest" && *t != "<none>")
+            .map(|t| t.to_string())
+            .collect();
+
+        Ok(versions)
     }
 
     /// Destroys all resources for this app.

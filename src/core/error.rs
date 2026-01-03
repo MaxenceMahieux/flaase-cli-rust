@@ -64,6 +64,18 @@ pub enum AppError {
     #[error("Deployment error: {0}")]
     Deploy(String),
 
+    #[error("Tests failed: {0}")]
+    TestsFailed(String),
+
+    #[error("Hook failed: {0}")]
+    HookFailed(String),
+
+    #[error("Rollback failed: {0}")]
+    RollbackFailed(String),
+
+    #[error("Approval error: {0}")]
+    Approval(String),
+
     #[error("Operation cancelled by user")]
     Cancelled,
 }

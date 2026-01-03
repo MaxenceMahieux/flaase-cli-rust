@@ -279,6 +279,215 @@ pub enum AutodeployCommands {
         #[arg(long)]
         window: Option<u64>,
     },
+
+    /// Configure test execution before deployment
+    Test {
+        /// Name of the app
+        app: String,
+
+        /// Enable test execution
+        #[arg(long)]
+        enable: bool,
+
+        /// Disable test execution
+        #[arg(long)]
+        disable: bool,
+
+        /// Test command to run (e.g., "npm test", "cargo test")
+        #[arg(long)]
+        command: Option<String>,
+
+        /// Timeout in seconds (default: 300)
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Whether to fail deployment on test errors
+        #[arg(long)]
+        fail_on_error: Option<bool>,
+    },
+
+    /// Manage deployment hooks
+    #[command(subcommand)]
+    Hooks(HooksCommands),
+
+    /// Configure rollback settings
+    RollbackConfig {
+        /// Name of the app
+        app: String,
+
+        /// Enable rollback
+        #[arg(long)]
+        enable: bool,
+
+        /// Disable rollback
+        #[arg(long)]
+        disable: bool,
+
+        /// Number of versions to keep for rollback (default: 3)
+        #[arg(long)]
+        keep_versions: Option<u32>,
+
+        /// Enable auto-rollback on deployment failure
+        #[arg(long)]
+        auto_rollback: Option<bool>,
+    },
+
+    /// Manage deployment environments
+    #[command(subcommand)]
+    Env(EnvDeployCommands),
+
+    /// Manage approval gates
+    #[command(subcommand)]
+    Approval(ApprovalCommands),
+
+    /// Configure Docker build settings
+    Build {
+        /// Name of the app
+        app: String,
+
+        /// Enable/disable Docker build cache
+        #[arg(long)]
+        cache: Option<bool>,
+
+        /// Enable/disable BuildKit
+        #[arg(long)]
+        buildkit: Option<bool>,
+
+        /// Docker registry to use for cache (e.g., "registry.example.com/myapp")
+        #[arg(long)]
+        cache_from: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HooksCommands {
+    /// List all hooks
+    List {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Add a hook
+    Add {
+        /// Name of the app
+        app: String,
+
+        /// Hook phase: pre_build, pre_deploy, post_deploy, on_failure
+        phase: String,
+
+        /// Hook name
+        name: String,
+
+        /// Command to run
+        command: String,
+
+        /// Timeout in seconds (default: 60)
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+
+        /// Fail deployment if hook fails
+        #[arg(long)]
+        required: bool,
+
+        /// Run inside the app container instead of on host
+        #[arg(long)]
+        in_container: bool,
+    },
+
+    /// Remove a hook
+    Remove {
+        /// Name of the app
+        app: String,
+
+        /// Hook phase: pre_build, pre_deploy, post_deploy, on_failure
+        phase: String,
+
+        /// Hook name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EnvDeployCommands {
+    /// List environments
+    List {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Add an environment
+    Add {
+        /// Name of the app
+        app: String,
+
+        /// Environment name (e.g., "staging", "production")
+        name: String,
+
+        /// Branch that triggers this environment
+        branch: String,
+
+        /// Auto-deploy when branch is pushed
+        #[arg(long)]
+        auto_deploy: bool,
+
+        /// Domains for this environment (can specify multiple)
+        #[arg(long)]
+        domain: Option<Vec<String>>,
+    },
+
+    /// Remove an environment
+    Remove {
+        /// Name of the app
+        app: String,
+
+        /// Environment name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ApprovalCommands {
+    /// Configure approval settings
+    Config {
+        /// Name of the app
+        app: String,
+
+        /// Enable approval gates
+        #[arg(long)]
+        enable: bool,
+
+        /// Disable approval gates
+        #[arg(long)]
+        disable: bool,
+
+        /// Approval timeout in minutes (default: 60)
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+
+    /// List pending approvals
+    Pending {
+        /// Name of the app
+        app: String,
+    },
+
+    /// Approve a pending deployment
+    Approve {
+        /// Name of the app
+        app: String,
+
+        /// Approval ID (optional, uses latest if not provided)
+        approval_id: Option<String>,
+    },
+
+    /// Reject a pending deployment
+    Reject {
+        /// Name of the app
+        app: String,
+
+        /// Approval ID (optional, uses latest if not provided)
+        approval_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

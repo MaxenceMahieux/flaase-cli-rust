@@ -33,8 +33,10 @@ pub fn send_notifications(
     // Check if we should notify for this event
     let should_notify = match event.status {
         DeploymentStatus::Triggered => config.events.on_start,
+        DeploymentStatus::PendingApproval => config.events.on_start, // Notify as start
         DeploymentStatus::Success => config.events.on_success,
         DeploymentStatus::Failed => config.events.on_failure,
+        DeploymentStatus::RolledBack => config.events.on_failure, // Notify as failure
     };
 
     if !should_notify {
@@ -65,8 +67,10 @@ fn send_slack_notification(
 ) -> Result<(), AppError> {
     let (emoji, color, status_text) = match event.status {
         DeploymentStatus::Triggered => (":rocket:", "#3498db", "started"),
+        DeploymentStatus::PendingApproval => (":hourglass:", "#f39c12", "awaiting approval"),
         DeploymentStatus::Success => (":white_check_mark:", "#2ecc71", "succeeded"),
         DeploymentStatus::Failed => (":x:", "#e74c3c", "failed"),
+        DeploymentStatus::RolledBack => (":rewind:", "#9b59b6", "rolled back"),
     };
 
     let duration_text = event
@@ -132,8 +136,10 @@ fn send_discord_notification(
 ) -> Result<(), AppError> {
     let (emoji, color, status_text) = match event.status {
         DeploymentStatus::Triggered => (":rocket:", 0x3498db, "started"),
+        DeploymentStatus::PendingApproval => (":hourglass:", 0xf39c12, "awaiting approval"),
         DeploymentStatus::Success => (":white_check_mark:", 0x2ecc71, "succeeded"),
         DeploymentStatus::Failed => (":x:", 0xe74c3c, "failed"),
+        DeploymentStatus::RolledBack => (":rewind:", 0x9b59b6, "rolled back"),
     };
 
     let duration_text = event
