@@ -104,15 +104,19 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
 
         Commands::Domain { command } => match command {
             DomainCommands::List { app } => {
-                ui::info(&format!("Domain list '{}' not yet implemented", app));
+                flaase::cli::domain::list(&app)?;
                 Ok(())
             }
-            DomainCommands::Add { app, .. } => {
-                ui::info(&format!("Domain add '{}' not yet implemented", app));
+            DomainCommands::Add {
+                app,
+                domain,
+                skip_dns_check,
+            } => {
+                flaase::cli::domain::add(&app, &domain, skip_dns_check)?;
                 Ok(())
             }
-            DomainCommands::Remove { app, .. } => {
-                ui::info(&format!("Domain remove '{}' not yet implemented", app));
+            DomainCommands::Remove { app, domain } => {
+                flaase::cli::domain::remove(&app, &domain)?;
                 Ok(())
             }
         },

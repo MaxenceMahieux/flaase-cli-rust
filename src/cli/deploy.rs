@@ -99,7 +99,7 @@ pub fn start(app_name: &str, verbose: bool) -> Result<(), AppError> {
         Ok(()) => {
             spinner.finish("running");
             println!();
-            ui::success(&format!("App running at https://{}", config.domain));
+            ui::success(&format!("App running at https://{}", config.primary_domain()));
             Ok(())
         }
         Err(e) => {
@@ -135,7 +135,7 @@ pub fn restart(app_name: &str, verbose: bool) -> Result<(), AppError> {
         Ok(()) => {
             spinner.finish("restarted");
             println!();
-            ui::success(&format!("App restarted at https://{}", config.domain));
+            ui::success(&format!("App restarted at https://{}", config.primary_domain()));
             Ok(())
         }
         Err(e) => {

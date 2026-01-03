@@ -16,7 +16,13 @@ pub struct AppConfig {
     pub repository: String,
     pub ssh_key: PathBuf,
     pub stack: Stack,
-    pub domain: String,
+    /// Legacy single domain field (for backward compatibility).
+    /// New apps use the `domains` vector instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// List of domains for this app. First domain with `primary: true` is the main domain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<DomainConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,7 +58,8 @@ impl AppConfig {
             repository,
             ssh_key,
             stack,
-            domain,
+            domain: None,
+            domains: vec![DomainConfig::new(&domain, true)],
             port: None,
             database,
             cache,
@@ -61,6 +68,53 @@ impl AppConfig {
             autodeploy_config: None,
             created_at: Utc::now(),
             deployed_at: None,
+        }
+    }
+
+    /// Returns the primary domain for this app.
+    pub fn primary_domain(&self) -> &str {
+        // First check domains vector
+        if let Some(primary) = self.domains.iter().find(|d| d.primary) {
+            return &primary.domain;
+        }
+        // Fall back to first domain in vector
+        if let Some(first) = self.domains.first() {
+            return &first.domain;
+        }
+        // Legacy fallback to single domain field
+        self.domain.as_deref().unwrap_or("localhost")
+    }
+
+    /// Returns all domains for this app (including legacy single domain).
+    pub fn all_domains(&self) -> Vec<&DomainConfig> {
+        self.domains.iter().collect()
+    }
+
+    /// Adds a domain to this app.
+    pub fn add_domain(&mut self, domain: &str) {
+        self.domains.push(DomainConfig::new(domain, false));
+    }
+
+    /// Removes a domain from this app. Returns true if removed.
+    pub fn remove_domain(&mut self, domain: &str) -> bool {
+        if let Some(idx) = self.domains.iter().position(|d| d.domain == domain) {
+            self.domains.remove(idx);
+            return true;
+        }
+        false
+    }
+
+    /// Checks if a domain is configured for this app.
+    pub fn has_domain(&mut self, domain: &str) -> bool {
+        self.domains.iter().any(|d| d.domain == domain)
+    }
+
+    /// Migrates legacy single-domain config to multi-domain format.
+    fn migrate_domains(&mut self) {
+        if self.domains.is_empty() {
+            if let Some(domain) = self.domain.take() {
+                self.domains.push(DomainConfig::new(&domain, true));
+            }
         }
     }
 
@@ -116,6 +170,7 @@ impl AppConfig {
     }
 
     /// Loads an app configuration from disk.
+    /// Automatically migrates legacy single-domain configs to multi-domain format.
     pub fn load(name: &str) -> Result<Self, AppError> {
         let config_path = format!("{}/{}/config.yml", FLAASE_APPS_PATH, name);
         let path = Path::new(&config_path);
@@ -127,8 +182,13 @@ impl AppConfig {
         let content = std::fs::read_to_string(path)
             .map_err(|e| AppError::Config(format!("Failed to read app config: {}", e)))?;
 
-        serde_yaml::from_str(&content)
-            .map_err(|e| AppError::Config(format!("Failed to parse app config: {}", e)))
+        let mut config: Self = serde_yaml::from_str(&content)
+            .map_err(|e| AppError::Config(format!("Failed to parse app config: {}", e)))?;
+
+        // Migrate legacy single-domain to multi-domain format
+        config.migrate_domains();
+
+        Ok(config)
     }
 
     /// Saves the app configuration to disk.
