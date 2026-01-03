@@ -512,6 +512,12 @@ pub struct AutodeployConfig {
     pub branch: String,
     /// Webhook endpoint path (unique per app).
     pub webhook_path: String,
+    /// Rate limiting configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Notification configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<NotificationConfig>,
 }
 
 impl AutodeployConfig {
@@ -524,11 +530,140 @@ impl AutodeployConfig {
             enabled: true,
             branch: Self::default_branch(),
             webhook_path: webhook_path.to_string(),
+            rate_limit: Some(RateLimitConfig::default()),
+            notifications: None,
         }
     }
 
     pub fn with_branch(mut self, branch: &str) -> Self {
         self.branch = branch.to_string();
         self
+    }
+}
+
+/// Rate limiting configuration for autodeploy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Whether rate limiting is enabled.
+    #[serde(default = "RateLimitConfig::default_enabled")]
+    pub enabled: bool,
+    /// Maximum number of deployments allowed in the time window.
+    #[serde(default = "RateLimitConfig::default_max_deploys")]
+    pub max_deploys: u32,
+    /// Time window in seconds for rate limiting.
+    #[serde(default = "RateLimitConfig::default_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl RateLimitConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_max_deploys() -> u32 {
+        5
+    }
+
+    fn default_window_seconds() -> u64 {
+        300 // 5 minutes
+    }
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_deploys: Self::default_max_deploys(),
+            window_seconds: Self::default_window_seconds(),
+        }
+    }
+}
+
+/// Notification configuration for autodeploy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    /// Whether notifications are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Slack webhook configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<SlackNotificationConfig>,
+    /// Discord webhook configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord: Option<DiscordNotificationConfig>,
+    /// Events to notify on.
+    #[serde(default)]
+    pub events: NotificationEvents,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            slack: None,
+            discord: None,
+            events: NotificationEvents::default(),
+        }
+    }
+}
+
+/// Slack webhook configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackNotificationConfig {
+    /// Slack webhook URL.
+    pub webhook_url: String,
+    /// Optional channel override (uses webhook default if not set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Optional username override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+/// Discord webhook configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordNotificationConfig {
+    /// Discord webhook URL.
+    pub webhook_url: String,
+    /// Optional username override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+/// Events to send notifications for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationEvents {
+    /// Notify on deployment start.
+    #[serde(default = "NotificationEvents::default_on_start")]
+    pub on_start: bool,
+    /// Notify on deployment success.
+    #[serde(default = "NotificationEvents::default_on_success")]
+    pub on_success: bool,
+    /// Notify on deployment failure.
+    #[serde(default = "NotificationEvents::default_on_failure")]
+    pub on_failure: bool,
+}
+
+impl NotificationEvents {
+    fn default_on_start() -> bool {
+        false
+    }
+
+    fn default_on_success() -> bool {
+        true
+    }
+
+    fn default_on_failure() -> bool {
+        true
+    }
+}
+
+impl Default for NotificationEvents {
+    fn default() -> Self {
+        Self {
+            on_start: Self::default_on_start(),
+            on_success: Self::default_on_success(),
+            on_failure: Self::default_on_failure(),
+        }
     }
 }
