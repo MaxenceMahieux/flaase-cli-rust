@@ -130,7 +130,7 @@ pub fn status(app: &str) -> Result<(), AppError> {
         println!("  Branch:  {}", console::style(&autodeploy.branch).cyan());
 
         // Show webhook URL
-        let webhook_url = WebhookProvider::webhook_url(&config.domain, &autodeploy.webhook_path);
+        let webhook_url = WebhookProvider::webhook_url(config.primary_domain(), &autodeploy.webhook_path);
         println!("  Webhook: {}", console::style(&webhook_url).dim());
 
         println!();
@@ -211,7 +211,7 @@ fn show_deployment_history(config: &AppConfig) -> Result<(), AppError> {
 /// Shows webhook information for an already configured app.
 fn show_webhook_info(config: &AppConfig) -> Result<(), AppError> {
     if let Some(autodeploy) = &config.autodeploy_config {
-        let webhook_url = WebhookProvider::webhook_url(&config.domain, &autodeploy.webhook_path);
+        let webhook_url = WebhookProvider::webhook_url(config.primary_domain(), &autodeploy.webhook_path);
 
         println!("Current configuration:");
         println!("  Branch:  {}", console::style(&autodeploy.branch).cyan());
@@ -252,7 +252,7 @@ fn repo_to_github_settings_url(repo: &str) -> String {
 /// Shows setup instructions for configuring the GitHub webhook.
 fn show_setup_instructions(config: &AppConfig, secret: &str) -> Result<(), AppError> {
     let autodeploy = config.autodeploy_config.as_ref().unwrap();
-    let webhook_url = WebhookProvider::webhook_url(&config.domain, &autodeploy.webhook_path);
+    let webhook_url = WebhookProvider::webhook_url(config.primary_domain(), &autodeploy.webhook_path);
     let github_settings_url = repo_to_github_settings_url(&config.repository);
 
     println!("{}", console::style("GitHub Webhook Setup").bold());
