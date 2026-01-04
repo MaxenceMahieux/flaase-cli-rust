@@ -13,19 +13,41 @@ use crate::core::FLAASE_APPS_PATH;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub name: String,
-    pub repository: String,
-    pub ssh_key: PathBuf,
-    pub stack: Stack,
+
+    /// Deployment type: source (git) or image (docker registry).
+    #[serde(default)]
+    pub deployment_type: DeploymentType,
+
+    // === Source deployment fields (optional if image) ===
+    /// Git repository URL (required for source deployments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// SSH key path for git operations (required for source deployments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_key: Option<PathBuf>,
+    /// Application stack (required for source deployments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<Stack>,
     /// Detailed stack configuration for customizable stacks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_config: Option<StackConfig>,
+
+    // === Image deployment fields (optional if source) ===
+    /// Docker image configuration (required for image deployments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageConfig>,
+    /// Volume mounts for the container.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeMount>,
+
+    // === Common fields ===
     /// Legacy single domain field (for backward compatibility).
-    /// New apps use the `domains` vector instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    /// List of domains for this app. First domain with `primary: true` is the main domain.
+    /// List of domains for this app.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domains: Vec<DomainConfig>,
+    /// Port the application listens on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,9 +66,9 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Creates a new app configuration.
+    /// Creates a new source-based app configuration (from Git repository).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new_source(
         name: String,
         repository: String,
         ssh_key: PathBuf,
@@ -60,10 +82,13 @@ impl AppConfig {
     ) -> Self {
         Self {
             name,
-            repository,
-            ssh_key,
-            stack,
+            deployment_type: DeploymentType::Source,
+            repository: Some(repository),
+            ssh_key: Some(ssh_key),
+            stack: Some(stack),
             stack_config,
+            image: None,
+            volumes: Vec::new(),
             domain: None,
             domains: vec![DomainConfig::new(&domain, true)],
             port,
@@ -75,6 +100,55 @@ impl AppConfig {
             created_at: Utc::now(),
             deployed_at: None,
         }
+    }
+
+    /// Creates a new image-based app configuration (from Docker registry).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_image(
+        name: String,
+        image: ImageConfig,
+        domain: String,
+        port: u16,
+        volumes: Vec<VolumeMount>,
+        database: Option<DatabaseConfig>,
+        cache: Option<CacheConfig>,
+        health_check: Option<HealthCheckConfig>,
+    ) -> Self {
+        Self {
+            name,
+            deployment_type: DeploymentType::Image,
+            repository: None,
+            ssh_key: None,
+            stack: None,
+            stack_config: None,
+            image: Some(image),
+            volumes,
+            domain: None,
+            domains: vec![DomainConfig::new(&domain, true)],
+            port: Some(port),
+            database,
+            cache,
+            health_check,
+            autodeploy: false,
+            autodeploy_config: None,
+            created_at: Utc::now(),
+            deployed_at: None,
+        }
+    }
+
+    /// Returns whether this is a source-based deployment.
+    pub fn is_source_deployment(&self) -> bool {
+        matches!(self.deployment_type, DeploymentType::Source)
+    }
+
+    /// Returns whether this is an image-based deployment.
+    pub fn is_image_deployment(&self) -> bool {
+        matches!(self.deployment_type, DeploymentType::Image)
+    }
+
+    /// Returns the registry credentials path for image deployments.
+    pub fn registry_auth_path(&self) -> PathBuf {
+        self.app_dir().join(".registry-auth")
     }
 
     /// Returns the primary domain for this app.
@@ -125,9 +199,14 @@ impl AppConfig {
     }
 
     /// Returns the effective port for this app.
-    /// Uses configured port or stack default.
+    /// Uses configured port, stack default, or 8080 for image deployments.
     pub fn effective_port(&self) -> u16 {
-        self.port.unwrap_or_else(|| self.stack.default_port())
+        self.port.unwrap_or_else(|| {
+            self.stack
+                .as_ref()
+                .map(|s| s.default_port())
+                .unwrap_or(8080)
+        })
     }
 
     /// Returns the health check configuration with defaults.
@@ -1335,6 +1414,196 @@ impl Default for BuildConfig {
             cache_enabled: Self::default_cache_enabled(),
             buildkit: Self::default_buildkit(),
             cache_from: None,
+        }
+    }
+}
+
+// ============================================================================
+// Deployment Type
+// ============================================================================
+
+/// Type of deployment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentType {
+    /// Deploy from Git repository (build from source).
+    #[default]
+    Source,
+    /// Deploy from Docker registry (pre-built image).
+    Image,
+}
+
+impl DeploymentType {
+    pub fn display_name(&self) -> &str {
+        match self {
+            DeploymentType::Source => "From Git repository",
+            DeploymentType::Image => "From Docker image",
+        }
+    }
+}
+
+impl fmt::Display for DeploymentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+// ============================================================================
+// Docker Image Configuration
+// ============================================================================
+
+/// Docker image configuration for image-based deployments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageConfig {
+    /// Image name (e.g., "nginx", "ghcr.io/user/app").
+    pub name: String,
+    /// Image tag (e.g., "latest", "v1.0.0").
+    #[serde(default = "ImageConfig::default_tag")]
+    pub tag: String,
+    /// Image digest for reproducibility (e.g., "sha256:abc123...").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// Docker registry.
+    #[serde(default)]
+    pub registry: Registry,
+    /// Whether the registry requires authentication.
+    #[serde(default)]
+    pub private: bool,
+}
+
+impl ImageConfig {
+    fn default_tag() -> String {
+        "latest".to_string()
+    }
+
+    /// Returns the full image reference (registry/name:tag).
+    pub fn full_reference(&self) -> String {
+        let registry_prefix = match &self.registry {
+            Registry::DockerHub => String::new(),
+            Registry::Ghcr => "ghcr.io/".to_string(),
+            Registry::Gcr => "gcr.io/".to_string(),
+            Registry::Ecr { region } => format!("{}.dkr.ecr.amazonaws.com/", region),
+            Registry::Custom { url } => format!("{}/", url.trim_end_matches('/')),
+        };
+
+        if let Some(digest) = &self.digest {
+            format!("{}{}@{}", registry_prefix, self.name, digest)
+        } else {
+            format!("{}{}:{}", registry_prefix, self.name, self.tag)
+        }
+    }
+
+    /// Returns the display name for the image.
+    pub fn display_name(&self) -> String {
+        format!("{}:{}", self.name, self.tag)
+    }
+}
+
+/// Docker registry type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Registry {
+    /// Docker Hub (docker.io).
+    #[default]
+    DockerHub,
+    /// GitHub Container Registry (ghcr.io).
+    Ghcr,
+    /// Google Container Registry (gcr.io).
+    Gcr,
+    /// Amazon Elastic Container Registry.
+    Ecr { region: String },
+    /// Custom/private registry.
+    Custom { url: String },
+}
+
+impl Registry {
+    /// Returns the display name.
+    pub fn display_name(&self) -> &str {
+        match self {
+            Registry::DockerHub => "Docker Hub",
+            Registry::Ghcr => "GitHub Container Registry",
+            Registry::Gcr => "Google Container Registry",
+            Registry::Ecr { .. } => "Amazon ECR",
+            Registry::Custom { .. } => "Custom Registry",
+        }
+    }
+
+    /// Returns whether this registry typically requires authentication.
+    pub fn requires_auth(&self) -> bool {
+        match self {
+            Registry::DockerHub => false, // Public images don't need auth
+            Registry::Ghcr => false,      // Public images don't need auth
+            Registry::Gcr => true,        // Usually needs auth
+            Registry::Ecr { .. } => true, // Always needs auth
+            Registry::Custom { .. } => true, // Assume private
+        }
+    }
+}
+
+impl fmt::Display for Registry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+// ============================================================================
+// Volume Configuration
+// ============================================================================
+
+/// Volume mount configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeMount {
+    /// Path inside the container.
+    pub container_path: String,
+    /// Named volume name (Docker will create it).
+    pub volume_name: String,
+    /// Whether the volume is read-only.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+impl VolumeMount {
+    pub fn new(container_path: &str, volume_name: &str) -> Self {
+        Self {
+            container_path: container_path.to_string(),
+            volume_name: volume_name.to_string(),
+            read_only: false,
+        }
+    }
+
+    /// Returns the Docker volume mount string.
+    pub fn to_docker_arg(&self) -> String {
+        if self.read_only {
+            format!("{}:{}:ro", self.volume_name, self.container_path)
+        } else {
+            format!("{}:{}", self.volume_name, self.container_path)
+        }
+    }
+}
+
+// ============================================================================
+// Registry Credentials
+// ============================================================================
+
+/// Registry authentication credentials.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryCredentials {
+    pub username: String,
+    #[serde(skip_serializing)]
+    pub password: String,
+    /// Base64-encoded auth string for Docker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+}
+
+impl RegistryCredentials {
+    pub fn new(username: &str, password: &str) -> Self {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let auth_token = STANDARD.encode(format!("{}:{}", username, password));
+        Self {
+            username: username.to_string(),
+            password: password.to_string(),
+            auth_token: Some(auth_token),
         }
     }
 }
