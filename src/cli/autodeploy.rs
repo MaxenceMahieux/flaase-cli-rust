@@ -259,7 +259,8 @@ fn repo_to_github_settings_url(repo: &str) -> String {
 fn show_setup_instructions(config: &AppConfig, secret: &str) -> Result<(), AppError> {
     let autodeploy = config.autodeploy_config.as_ref().unwrap();
     let webhook_url = WebhookProvider::webhook_url(config.primary_domain(), &autodeploy.webhook_path);
-    let github_settings_url = repo_to_github_settings_url(&config.repository);
+    let repo = config.repository.as_deref().unwrap_or("");
+    let github_settings_url = repo_to_github_settings_url(repo);
 
     println!("{}", console::style("GitHub Webhook Setup").bold());
     println!();

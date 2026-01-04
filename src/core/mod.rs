@@ -6,17 +6,20 @@ pub mod deployments;
 pub mod env;
 pub mod error;
 pub mod notifications;
+pub mod registry;
 pub mod secrets;
 pub mod stack_detection;
 
 pub use app_config::{
     AppConfig, ApprovalConfig, AutodeployConfig, BuildConfig, CacheConfig, CacheType,
-    DatabaseConfig, DatabaseType, DiscordNotificationConfig, DomainAuth, DomainConfig,
-    EnvironmentConfig, Framework, HealthCheckConfig, HookCommand, HooksConfig, NotificationConfig,
-    NotificationEvents, PackageManager, RateLimitConfig, RollbackConfig, SlackNotificationConfig,
-    Stack, StackConfig, TestConfig,
+    DatabaseConfig, DatabaseType, DeploymentType, DiscordNotificationConfig, DomainAuth,
+    DomainConfig, EnvironmentConfig, Framework, HealthCheckConfig, HookCommand, HooksConfig,
+    ImageConfig, NotificationConfig, NotificationEvents, PackageManager, RateLimitConfig,
+    Registry, RegistryCredentials, RollbackConfig, SlackNotificationConfig, Stack, StackConfig,
+    TestConfig, VolumeMount,
 };
 pub use stack_detection::{detect_stack, DetectionConfidence, DetectionResult};
+pub use registry::{detect_default_port, parse_image_reference, pull_image};
 pub use config::{
     ExistingComponentAction, ServerConfig, FLAASE_APPS_PATH, FLAASE_BASE_PATH, FLAASE_CONFIG_PATH,
     FLAASE_TRAEFIK_DYNAMIC_PATH, FLAASE_TRAEFIK_PATH,

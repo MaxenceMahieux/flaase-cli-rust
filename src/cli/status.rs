@@ -236,7 +236,7 @@ pub fn status(_verbose: bool) -> Result<(), AppError> {
                     name: config.name,
                     status,
                     domain,
-                    stack: config.stack.display_name().to_string(),
+                    stack: config.stack.as_ref().map(|s| s.display_name()).unwrap_or("Image").to_string(),
                     deployed_at: config.deployed_at,
                 });
             }
