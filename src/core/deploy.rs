@@ -362,7 +362,10 @@ impl<'a> Deployer<'a> {
     fn update_inner(&self, repo_path: &std::path::Path) -> Result<(String, bool), AppError> {
         // Step 1: Pull latest changes
         let spinner = ui::ProgressBar::spinner("Pulling latest changes");
-        let had_changes = GitProvider::pull(repo_path, &self.config.ssh_key, self.ctx)?;
+        let ssh_key = self.config.ssh_key.as_ref().ok_or_else(|| {
+            AppError::Config("SSH key required for source deployments".into())
+        })?;
+        let had_changes = GitProvider::pull(repo_path, ssh_key, self.ctx)?;
         spinner.finish(if had_changes { "updated" } else { "no changes" });
 
         // Get new commit SHA
@@ -550,17 +553,19 @@ impl<'a> Deployer<'a> {
 
     /// Syncs the repository (clone or pull).
     fn sync_repository(&self, repo_path: &Path) -> Result<(), AppError> {
+        let repository = self.config.repository.as_ref().ok_or_else(|| {
+            AppError::Config("Repository required for source deployments".into())
+        })?;
+        let ssh_key = self.config.ssh_key.as_ref().ok_or_else(|| {
+            AppError::Config("SSH key required for source deployments".into())
+        })?;
+
         if GitProvider::is_repo(repo_path) {
             // Pull latest changes
-            let _has_changes = GitProvider::pull(repo_path, &self.config.ssh_key, self.ctx)?;
+            let _has_changes = GitProvider::pull(repo_path, ssh_key, self.ctx)?;
         } else {
             // Clone repository
-            GitProvider::clone(
-                &self.config.repository,
-                repo_path,
-                &self.config.ssh_key,
-                self.ctx,
-            )?;
+            GitProvider::clone(repository, repo_path, ssh_key, self.ctx)?;
         }
 
         Ok(())
@@ -730,10 +735,13 @@ impl<'a> Deployer<'a> {
         let latest_tag = self.current_image_tag();
         let previous_tag = self.previous_image_tag();
 
-        // Check if Dockerfile exists, otherwise generate one
+        // Check if Dockerfile exists, otherwise generate one (only for source deployments)
         if !dockerfile::exists(repo_path) {
+            let stack = self.config.stack.as_ref().ok_or_else(|| {
+                AppError::Config("Stack required for source deployments".into())
+            })?;
             let port = self.config.effective_port();
-            let dockerfile_content = dockerfile::generate(self.config.stack, port);
+            let dockerfile_content = dockerfile::generate(*stack, port);
             let dockerfile_path = dockerfile::path(repo_path);
 
             if self.ctx.is_dry_run() {
