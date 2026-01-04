@@ -619,6 +619,9 @@ pub struct NotificationConfig {
     /// Discord webhook configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord: Option<DiscordNotificationConfig>,
+    /// Email SMTP configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<EmailNotificationConfig>,
     /// Events to notify on.
     #[serde(default)]
     pub events: NotificationEvents,
@@ -630,6 +633,7 @@ impl Default for NotificationConfig {
             enabled: false,
             slack: None,
             discord: None,
+            email: None,
             events: NotificationEvents::default(),
         }
     }
@@ -656,6 +660,40 @@ pub struct DiscordNotificationConfig {
     /// Optional username override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+}
+
+/// Email SMTP configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailNotificationConfig {
+    /// SMTP server host.
+    pub smtp_host: String,
+    /// SMTP server port (default: 587 for TLS, 465 for SSL).
+    #[serde(default = "EmailNotificationConfig::default_port")]
+    pub smtp_port: u16,
+    /// SMTP username for authentication.
+    pub smtp_user: String,
+    /// SMTP password for authentication.
+    pub smtp_password: String,
+    /// Sender email address.
+    pub from_email: String,
+    /// Sender name (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    /// Recipient email addresses.
+    pub to_emails: Vec<String>,
+    /// Use STARTTLS (default: true).
+    #[serde(default = "EmailNotificationConfig::default_starttls")]
+    pub starttls: bool,
+}
+
+impl EmailNotificationConfig {
+    fn default_port() -> u16 {
+        587
+    }
+
+    fn default_starttls() -> bool {
+        true
+    }
 }
 
 /// Events to send notifications for.

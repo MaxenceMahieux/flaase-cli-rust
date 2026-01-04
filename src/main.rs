@@ -202,6 +202,32 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
                     )?;
                     Ok(())
                 }
+                NotifyCommands::Email {
+                    app,
+                    smtp_host,
+                    smtp_port,
+                    smtp_user,
+                    smtp_password,
+                    from_email,
+                    from_name,
+                    to_emails,
+                    starttls,
+                    remove,
+                } => {
+                    flaase::cli::autodeploy::notify_email(
+                        &app,
+                        smtp_host.as_deref(),
+                        smtp_port,
+                        smtp_user.as_deref(),
+                        smtp_password.as_deref(),
+                        from_email.as_deref(),
+                        from_name.as_deref(),
+                        to_emails.as_deref(),
+                        starttls,
+                        remove,
+                    )?;
+                    Ok(())
+                }
                 NotifyCommands::Events {
                     app,
                     on_start,

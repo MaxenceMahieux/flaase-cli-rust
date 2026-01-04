@@ -620,6 +620,48 @@ pub enum NotifyCommands {
         remove: bool,
     },
 
+    /// Configure Email notifications (SMTP)
+    Email {
+        /// Name of the app
+        app: String,
+
+        /// SMTP server host
+        #[arg(long)]
+        smtp_host: Option<String>,
+
+        /// SMTP server port (default: 587)
+        #[arg(long)]
+        smtp_port: Option<u16>,
+
+        /// SMTP username
+        #[arg(long)]
+        smtp_user: Option<String>,
+
+        /// SMTP password
+        #[arg(long)]
+        smtp_password: Option<String>,
+
+        /// Sender email address
+        #[arg(long)]
+        from_email: Option<String>,
+
+        /// Sender name (optional)
+        #[arg(long)]
+        from_name: Option<String>,
+
+        /// Recipient email addresses (comma-separated)
+        #[arg(long)]
+        to_emails: Option<String>,
+
+        /// Use STARTTLS (default: true)
+        #[arg(long)]
+        starttls: Option<bool>,
+
+        /// Remove email configuration
+        #[arg(long)]
+        remove: bool,
+    },
+
     /// Configure which events trigger notifications
     Events {
         /// Name of the app

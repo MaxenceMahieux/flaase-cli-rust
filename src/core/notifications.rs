@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use crate::core::app_config::{DiscordNotificationConfig, NotificationConfig, SlackNotificationConfig};
+use crate::core::app_config::{DiscordNotificationConfig, EmailNotificationConfig, NotificationConfig, SlackNotificationConfig};
 use crate::core::deployments::DeploymentStatus;
 use crate::core::error::AppError;
 
@@ -54,6 +54,13 @@ pub fn send_notifications(
     if let Some(discord) = &config.discord {
         if let Err(e) = send_discord_notification(discord, event) {
             eprintln!("Failed to send Discord notification: {}", e);
+        }
+    }
+
+    // Send to Email
+    if let Some(email) = &config.email {
+        if let Err(e) = send_email_notification(email, event) {
+            eprintln!("Failed to send email notification: {}", e);
         }
     }
 
@@ -185,6 +192,108 @@ fn send_discord_notification(
     });
 
     send_webhook_request(&config.webhook_url, &payload)
+}
+
+/// Sends an email notification via SMTP.
+fn send_email_notification(
+    config: &EmailNotificationConfig,
+    event: &DeploymentEvent,
+) -> Result<(), AppError> {
+    use std::process::Command;
+
+    let (emoji, status_text) = match event.status {
+        DeploymentStatus::Triggered => ("🚀", "started"),
+        DeploymentStatus::PendingApproval => ("⏳", "awaiting approval"),
+        DeploymentStatus::Success => ("✅", "succeeded"),
+        DeploymentStatus::Failed => ("❌", "failed"),
+        DeploymentStatus::RolledBack => ("⏪", "rolled back"),
+    };
+
+    let duration_text = event
+        .duration_secs
+        .map(|d| format!(" in {}s", d))
+        .unwrap_or_default();
+
+    let subject = format!(
+        "{} Deployment {} for {}{}",
+        emoji, status_text, event.app_name, duration_text
+    );
+
+    let from_name = config.from_name.as_deref().unwrap_or("Flaase");
+    let from = format!("{} <{}>", from_name, config.from_email);
+
+    let mut body = format!(
+        "Deployment {} for {}{}\n\n\
+         Branch: {}\n\
+         Commit: {}\n\
+         Triggered by: {}\n\
+         Message: {}\n",
+        status_text,
+        event.app_name,
+        duration_text,
+        event.branch,
+        event.commit_sha,
+        event.triggered_by,
+        event.commit_message
+    );
+
+    if let Some(error) = &event.error_message {
+        body.push_str(&format!("\nError: {}\n", error));
+    }
+
+    // Send via curl using SMTP
+    // Format: curl --url "smtp://host:port" --ssl-reqd --mail-from "from" --mail-rcpt "to" -T -
+    for to_email in &config.to_emails {
+        let smtp_url = if config.starttls {
+            format!("smtp://{}:{}", config.smtp_host, config.smtp_port)
+        } else {
+            format!("smtps://{}:{}", config.smtp_host, config.smtp_port)
+        };
+
+        let email_content = format!(
+            "From: {}\r\n\
+             To: {}\r\n\
+             Subject: {}\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             \r\n\
+             {}",
+            from, to_email, subject, body
+        );
+
+        let mut curl_args = vec![
+            "-s".to_string(),
+            "--url".to_string(),
+            smtp_url,
+            "--mail-from".to_string(),
+            config.from_email.clone(),
+            "--mail-rcpt".to_string(),
+            to_email.clone(),
+            "--user".to_string(),
+            format!("{}:{}", config.smtp_user, config.smtp_password),
+            "-T".to_string(),
+            "-".to_string(),
+        ];
+
+        if config.starttls {
+            curl_args.push("--ssl-reqd".to_string());
+        }
+
+        let output = Command::new("curl")
+            .args(&curl_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| AppError::Config(format!("Failed to execute curl: {}", e)))?;
+
+        // Write email content to stdin
+        if let Some(mut stdin) = output.stdin {
+            stdin.write_all(email_content.as_bytes())
+                .map_err(|e| AppError::Config(format!("Failed to write email: {}", e)))?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Sends a webhook request using raw TCP/TLS.
@@ -348,6 +457,10 @@ pub fn test_notification(config: &NotificationConfig, app_name: &str) -> Result<
 
     if let Some(discord) = &config.discord {
         send_discord_notification(discord, &test_event)?;
+    }
+
+    if let Some(email) = &config.email {
+        send_email_notification(email, &test_event)?;
     }
 
     Ok(())

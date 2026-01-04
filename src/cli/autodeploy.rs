@@ -864,6 +864,140 @@ pub fn notify_discord(
     Ok(())
 }
 
+/// Configures email (SMTP) notifications for an app.
+pub fn notify_email(
+    app: &str,
+    smtp_host: Option<&str>,
+    smtp_port: Option<u16>,
+    smtp_user: Option<&str>,
+    smtp_password: Option<&str>,
+    from_email: Option<&str>,
+    from_name: Option<&str>,
+    to_emails: Option<&str>,
+    starttls: Option<bool>,
+    remove: bool,
+) -> Result<(), AppError> {
+    use crate::core::app_config::EmailNotificationConfig;
+
+    let mut config = AppConfig::load(app)?;
+
+    if config.autodeploy_config.is_none() {
+        return Err(AppError::Validation(
+            "Autodeploy is not enabled for this app.".into(),
+        ));
+    }
+
+    let autodeploy = config.autodeploy_config.as_mut().unwrap();
+
+    // Initialize notifications if not present
+    if autodeploy.notifications.is_none() {
+        autodeploy.notifications = Some(NotificationConfig::default());
+    }
+
+    let notif = autodeploy.notifications.as_mut().unwrap();
+
+    if remove {
+        notif.email = None;
+        config.save()?;
+        ui::success("Email configuration removed");
+        return Ok(());
+    }
+
+    // Check if we have existing config or need all fields
+    let is_new = notif.email.is_none();
+
+    if is_new {
+        // Require all mandatory fields for new config
+        let host = smtp_host.ok_or_else(|| {
+            AppError::Validation("--smtp-host is required for new email configuration".into())
+        })?;
+        let user = smtp_user.ok_or_else(|| {
+            AppError::Validation("--smtp-user is required for new email configuration".into())
+        })?;
+        let password = smtp_password.ok_or_else(|| {
+            AppError::Validation("--smtp-password is required for new email configuration".into())
+        })?;
+        let from = from_email.ok_or_else(|| {
+            AppError::Validation("--from-email is required for new email configuration".into())
+        })?;
+        let to = to_emails.ok_or_else(|| {
+            AppError::Validation("--to-emails is required for new email configuration".into())
+        })?;
+
+        let recipients: Vec<String> = to
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if recipients.is_empty() {
+            return Err(AppError::Validation(
+                "At least one recipient email is required".into(),
+            ));
+        }
+
+        notif.email = Some(EmailNotificationConfig {
+            smtp_host: host.to_string(),
+            smtp_port: smtp_port.unwrap_or(587),
+            smtp_user: user.to_string(),
+            smtp_password: password.to_string(),
+            from_email: from.to_string(),
+            from_name: from_name.map(|s| s.to_string()),
+            to_emails: recipients,
+            starttls: starttls.unwrap_or(true),
+        });
+    } else {
+        // Update existing config
+        let email = notif.email.as_mut().unwrap();
+
+        if let Some(host) = smtp_host {
+            email.smtp_host = host.to_string();
+        }
+        if let Some(port) = smtp_port {
+            email.smtp_port = port;
+        }
+        if let Some(user) = smtp_user {
+            email.smtp_user = user.to_string();
+        }
+        if let Some(password) = smtp_password {
+            email.smtp_password = password.to_string();
+        }
+        if let Some(from) = from_email {
+            email.from_email = from.to_string();
+        }
+        if let Some(name) = from_name {
+            email.from_name = Some(name.to_string());
+        }
+        if let Some(to) = to_emails {
+            let recipients: Vec<String> = to
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !recipients.is_empty() {
+                email.to_emails = recipients;
+            }
+        }
+        if let Some(tls) = starttls {
+            email.starttls = tls;
+        }
+    }
+
+    // Enable notifications automatically
+    notif.enabled = true;
+
+    config.save()?;
+
+    ui::success("Email notifications configured");
+    println!();
+    println!(
+        "  Test with: {}",
+        console::style(format!("fl autodeploy notify test {}", app)).cyan()
+    );
+
+    Ok(())
+}
+
 /// Configures notification events for an app.
 pub fn notify_events(
     app: &str,
