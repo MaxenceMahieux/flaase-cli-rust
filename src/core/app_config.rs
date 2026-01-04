@@ -16,6 +16,9 @@ pub struct AppConfig {
     pub repository: String,
     pub ssh_key: PathBuf,
     pub stack: Stack,
+    /// Detailed stack configuration for customizable stacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_config: Option<StackConfig>,
     /// Legacy single domain field (for backward compatibility).
     /// New apps use the `domains` vector instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,7 +51,9 @@ impl AppConfig {
         repository: String,
         ssh_key: PathBuf,
         stack: Stack,
+        stack_config: Option<StackConfig>,
         domain: String,
+        port: Option<u16>,
         database: Option<DatabaseConfig>,
         cache: Option<CacheConfig>,
         autodeploy: bool,
@@ -58,9 +63,10 @@ impl AppConfig {
             repository,
             ssh_key,
             stack,
+            stack_config,
             domain: None,
             domains: vec![DomainConfig::new(&domain, true)],
-            port: None,
+            port,
             database,
             cache,
             health_check: None,
@@ -243,12 +249,34 @@ pub enum Stack {
     #[serde(rename = "nestjs")]
     NestJs,
     Laravel,
+    Python,
+    Go,
+    Ruby,
+    Rust,
+    Java,
+    Php,
+    Static,
+    /// User provides their own Dockerfile
+    Dockerfile,
 }
 
 impl Stack {
     /// Returns all available stacks.
     pub fn all() -> &'static [Stack] {
-        &[Stack::NextJs, Stack::NodeJs, Stack::NestJs, Stack::Laravel]
+        &[
+            Stack::NextJs,
+            Stack::NodeJs,
+            Stack::NestJs,
+            Stack::Laravel,
+            Stack::Python,
+            Stack::Go,
+            Stack::Ruby,
+            Stack::Rust,
+            Stack::Java,
+            Stack::Php,
+            Stack::Static,
+            Stack::Dockerfile,
+        ]
     }
 
     /// Returns the display name.
@@ -258,6 +286,14 @@ impl Stack {
             Stack::NodeJs => "Node.js",
             Stack::NestJs => "NestJS",
             Stack::Laravel => "Laravel",
+            Stack::Python => "Python",
+            Stack::Go => "Go",
+            Stack::Ruby => "Ruby",
+            Stack::Rust => "Rust",
+            Stack::Java => "Java",
+            Stack::Php => "PHP",
+            Stack::Static => "Static (HTML/CSS/JS)",
+            Stack::Dockerfile => "Custom Dockerfile",
         }
     }
 
@@ -268,11 +304,308 @@ impl Stack {
             Stack::NodeJs => 3000,
             Stack::NestJs => 3000,
             Stack::Laravel => 8000,
+            Stack::Python => 8000,
+            Stack::Go => 8080,
+            Stack::Ruby => 3000,
+            Stack::Rust => 8080,
+            Stack::Java => 8080,
+            Stack::Php => 8000,
+            Stack::Static => 80,
+            Stack::Dockerfile => 8080,
+        }
+    }
+
+    /// Returns whether this stack requires additional configuration.
+    pub fn needs_config(&self) -> bool {
+        matches!(
+            self,
+            Stack::Python | Stack::Go | Stack::Ruby | Stack::Rust | Stack::Java | Stack::Php | Stack::Static
+        )
+    }
+
+    /// Returns whether this stack uses a user-provided Dockerfile.
+    pub fn uses_custom_dockerfile(&self) -> bool {
+        matches!(self, Stack::Dockerfile)
+    }
+
+    /// Returns whether this stack requires a start command to be specified.
+    pub fn requires_start_command(&self) -> bool {
+        matches!(
+            self,
+            Stack::Python | Stack::Go | Stack::Ruby | Stack::Rust | Stack::Java | Stack::Php | Stack::NodeJs
+        )
+    }
+
+    /// Returns whether this stack has a build step.
+    pub fn has_build_step(&self) -> bool {
+        matches!(
+            self,
+            Stack::NextJs | Stack::NestJs | Stack::Rust | Stack::Go | Stack::Java
+        )
+    }
+
+    /// Returns a placeholder for the default start command.
+    pub fn default_start_command(&self) -> Option<&'static str> {
+        match self {
+            Stack::Python => Some("python -m uvicorn main:app --host 0.0.0.0"),
+            Stack::Go => Some("./app"),
+            Stack::Ruby => Some("bundle exec rails server"),
+            Stack::Rust => Some("./app"),
+            Stack::Java => Some("java -jar app.jar"),
+            Stack::Php => Some("php-fpm"),
+            Stack::NodeJs => Some("node dist/index.js"),
+            _ => None,
+        }
+    }
+
+    /// Returns a placeholder for the default build command.
+    pub fn default_build_command(&self) -> Option<&'static str> {
+        match self {
+            Stack::NextJs => Some("npm run build"),
+            Stack::NestJs => Some("npm run build"),
+            Stack::Rust => Some("cargo build --release"),
+            Stack::Go => Some("go build -o app ."),
+            Stack::Java => Some("mvn package -DskipTests"),
+            _ => None,
         }
     }
 }
 
 impl fmt::Display for Stack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+// ============================================================================
+// Stack Configuration for Custom Stacks
+// ============================================================================
+
+/// Detailed stack configuration for customizable stacks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackConfig {
+    /// Runtime version (e.g., "3.12" for Python, "22" for Node)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Package manager used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_manager: Option<PackageManager>,
+    /// Detected or selected framework
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework: Option<Framework>,
+    /// Build command (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_command: Option<String>,
+    /// Start command (required for most stacks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_command: Option<String>,
+    /// Install command override
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
+}
+
+impl Default for StackConfig {
+    fn default() -> Self {
+        Self {
+            version: None,
+            package_manager: None,
+            framework: None,
+            build_command: None,
+            start_command: None,
+            install_command: None,
+        }
+    }
+}
+
+/// Package managers supported by Flaase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManager {
+    // Node.js
+    Npm,
+    Yarn,
+    Pnpm,
+    // Python
+    Pip,
+    Poetry,
+    Pipenv,
+    Uv,
+    // Ruby
+    Bundler,
+    // PHP
+    Composer,
+    // Java
+    Maven,
+    Gradle,
+    // Go
+    GoMod,
+    // Rust
+    Cargo,
+    // None (static sites)
+    None,
+}
+
+impl PackageManager {
+    /// Returns package managers for a given stack.
+    pub fn for_stack(stack: Stack) -> &'static [PackageManager] {
+        match stack {
+            Stack::NextJs | Stack::NodeJs | Stack::NestJs => {
+                &[PackageManager::Npm, PackageManager::Yarn, PackageManager::Pnpm]
+            }
+            Stack::Python => &[
+                PackageManager::Pip,
+                PackageManager::Poetry,
+                PackageManager::Uv,
+                PackageManager::Pipenv,
+            ],
+            Stack::Ruby => &[PackageManager::Bundler],
+            Stack::Php | Stack::Laravel => &[PackageManager::Composer],
+            Stack::Java => &[PackageManager::Maven, PackageManager::Gradle],
+            Stack::Go => &[PackageManager::GoMod],
+            Stack::Rust => &[PackageManager::Cargo],
+            Stack::Static | Stack::Dockerfile => &[PackageManager::None],
+        }
+    }
+
+    /// Returns the display name.
+    pub fn display_name(&self) -> &str {
+        match self {
+            PackageManager::Npm => "npm",
+            PackageManager::Yarn => "yarn",
+            PackageManager::Pnpm => "pnpm",
+            PackageManager::Pip => "pip (requirements.txt)",
+            PackageManager::Poetry => "poetry (pyproject.toml)",
+            PackageManager::Pipenv => "pipenv (Pipfile)",
+            PackageManager::Uv => "uv (pyproject.toml)",
+            PackageManager::Bundler => "bundler (Gemfile)",
+            PackageManager::Composer => "composer",
+            PackageManager::Maven => "maven (pom.xml)",
+            PackageManager::Gradle => "gradle (build.gradle)",
+            PackageManager::GoMod => "go modules",
+            PackageManager::Cargo => "cargo",
+            PackageManager::None => "none",
+        }
+    }
+
+    /// Returns the lockfile name for this package manager.
+    pub fn lockfile(&self) -> Option<&str> {
+        match self {
+            PackageManager::Npm => Some("package-lock.json"),
+            PackageManager::Yarn => Some("yarn.lock"),
+            PackageManager::Pnpm => Some("pnpm-lock.yaml"),
+            PackageManager::Pip => None, // requirements.txt is not a lockfile
+            PackageManager::Poetry => Some("poetry.lock"),
+            PackageManager::Pipenv => Some("Pipfile.lock"),
+            PackageManager::Uv => Some("uv.lock"),
+            PackageManager::Bundler => Some("Gemfile.lock"),
+            PackageManager::Composer => Some("composer.lock"),
+            PackageManager::Maven => None,
+            PackageManager::Gradle => Some("gradle.lockfile"),
+            PackageManager::GoMod => Some("go.sum"),
+            PackageManager::Cargo => Some("Cargo.lock"),
+            PackageManager::None => None,
+        }
+    }
+}
+
+impl fmt::Display for PackageManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+/// Detected or selected framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Framework {
+    // Python
+    Django,
+    Flask,
+    FastApi,
+    // Ruby
+    Rails,
+    Sinatra,
+    // PHP
+    Symfony,
+    // Java
+    SpringBoot,
+    Quarkus,
+    // Go
+    Gin,
+    Echo,
+    Fiber,
+    Chi,
+    // Rust
+    Actix,
+    Axum,
+    Rocket,
+    // Generic
+    Express,
+    Fastify,
+    Hono,
+    Other,
+}
+
+impl Framework {
+    /// Returns frameworks for a given stack.
+    pub fn for_stack(stack: Stack) -> &'static [Framework] {
+        match stack {
+            Stack::Python => &[Framework::Django, Framework::FastApi, Framework::Flask, Framework::Other],
+            Stack::Ruby => &[Framework::Rails, Framework::Sinatra, Framework::Other],
+            Stack::Php => &[Framework::Symfony, Framework::Other],
+            Stack::Java => &[Framework::SpringBoot, Framework::Quarkus, Framework::Other],
+            Stack::Go => &[Framework::Gin, Framework::Echo, Framework::Fiber, Framework::Chi, Framework::Other],
+            Stack::Rust => &[Framework::Actix, Framework::Axum, Framework::Rocket, Framework::Other],
+            Stack::NodeJs => &[Framework::Express, Framework::Fastify, Framework::Hono, Framework::Other],
+            _ => &[],
+        }
+    }
+
+    /// Returns the display name.
+    pub fn display_name(&self) -> &str {
+        match self {
+            Framework::Django => "Django",
+            Framework::Flask => "Flask",
+            Framework::FastApi => "FastAPI",
+            Framework::Rails => "Rails",
+            Framework::Sinatra => "Sinatra",
+            Framework::Symfony => "Symfony",
+            Framework::SpringBoot => "Spring Boot",
+            Framework::Quarkus => "Quarkus",
+            Framework::Gin => "Gin",
+            Framework::Echo => "Echo",
+            Framework::Fiber => "Fiber",
+            Framework::Chi => "Chi",
+            Framework::Actix => "Actix Web",
+            Framework::Axum => "Axum",
+            Framework::Rocket => "Rocket",
+            Framework::Express => "Express",
+            Framework::Fastify => "Fastify",
+            Framework::Hono => "Hono",
+            Framework::Other => "Other / None",
+        }
+    }
+
+    /// Returns default start command suggestion for this framework.
+    pub fn default_start_command(&self, _port: u16) -> &'static str {
+        match self {
+            Framework::Django => "gunicorn config.wsgi:application --bind 0.0.0.0:8000",
+            Framework::Flask => "gunicorn app:app --bind 0.0.0.0:8000",
+            Framework::FastApi => "uvicorn main:app --host 0.0.0.0 --port 8000",
+            Framework::Rails => "rails server -b 0.0.0.0 -p 3000",
+            Framework::Sinatra => "ruby app.rb -o 0.0.0.0",
+            Framework::Symfony => "php bin/console server:start 0.0.0.0:8000",
+            Framework::SpringBoot => "java -jar target/*.jar",
+            Framework::Quarkus => "./target/quarkus-app/quarkus-run.jar",
+            Framework::Gin | Framework::Echo | Framework::Fiber | Framework::Chi => "./main",
+            Framework::Actix | Framework::Axum | Framework::Rocket => "./app",
+            Framework::Express | Framework::Fastify | Framework::Hono => "node dist/index.js",
+            Framework::Other => "",
+        }
+    }
+}
+
+impl fmt::Display for Framework {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.display_name())
     }

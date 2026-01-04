@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use crate::core::app_config::{
-    AppConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType, Stack,
+    AppConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType, Framework,
+    PackageManager, Stack, StackConfig,
 };
 use crate::core::context::ExecutionContext;
 use crate::core::error::AppError;
@@ -22,6 +23,8 @@ struct AppInitData {
     repository: String,
     ssh_key: PathBuf,
     stack: Stack,
+    stack_config: Option<StackConfig>,
+    port: Option<u16>,
     database: Option<DatabaseType>,
     cache: Option<CacheType>,
     domain: String,
@@ -35,6 +38,8 @@ enum ModifiableField {
     Repository,
     SshKey,
     Stack,
+    StackConfig,
+    Port,
     Database,
     Cache,
     Domain,
@@ -131,11 +136,19 @@ fn collect_app_data(ctx: &ExecutionContext) -> Result<AppInitData, AppError> {
     // 9. Autodeploy
     let autodeploy = prompt_autodeploy()?;
 
+    // Get stack configuration details
+    let stack_config = prompt_stack_config(stack)?;
+
+    // Get port if not using default
+    let port = prompt_port(stack)?;
+
     Ok(AppInitData {
         name,
         repository,
         ssh_key,
         stack,
+        stack_config,
+        port,
         database,
         cache,
         domain,
@@ -306,6 +319,208 @@ fn prompt_autodeploy() -> Result<bool, AppError> {
     Ok(ui::confirm("Enable autodeploy on git push?", true)?)
 }
 
+/// Prompts for stack configuration details.
+fn prompt_stack_config(stack: Stack) -> Result<Option<StackConfig>, AppError> {
+    // Skip for stacks that don't need extra config
+    if matches!(stack, Stack::NextJs | Stack::NestJs | Stack::Laravel) {
+        return Ok(None);
+    }
+
+    // For Dockerfile stack, no config needed
+    if stack == Stack::Dockerfile {
+        ui::info("Using existing Dockerfile from repository.");
+        return Ok(None);
+    }
+
+    println!();
+    ui::info(&format!("Configure {} settings (press Enter to skip):", stack.display_name()));
+
+    // Version
+    let version_placeholder = match stack {
+        Stack::NodeJs => Some("22"),
+        Stack::Python => Some("3.12"),
+        Stack::Go => Some("1.22"),
+        Stack::Ruby => Some("3.3"),
+        Stack::Rust => Some("1.75"),
+        Stack::Java => Some("21"),
+        Stack::Php => Some("8.3"),
+        _ => None,
+    };
+
+    let version = if let Some(placeholder) = version_placeholder {
+        let input = ui::input_with_placeholder(
+            &format!("{} version?", stack.display_name()),
+            Some(placeholder),
+        )?;
+        if input.is_empty() { None } else { Some(input) }
+    } else {
+        None
+    };
+
+    // Package manager (for stacks with multiple options)
+    let package_manager = prompt_package_manager(stack)?;
+
+    // Framework (optional)
+    let framework = prompt_framework(stack)?;
+
+    // Start command (required for custom stacks)
+    let start_command = if stack.requires_start_command() {
+        let placeholder = stack.default_start_command();
+        let cmd = ui::input_with_placeholder("Start command?", placeholder)?;
+        if cmd.is_empty() { None } else { Some(cmd) }
+    } else {
+        None
+    };
+
+    // Build command (optional)
+    let build_command = if stack.has_build_step() {
+        let placeholder = stack.default_build_command();
+        let cmd = ui::input_with_placeholder("Build command? (optional)", placeholder)?;
+        if cmd.is_empty() { None } else { Some(cmd) }
+    } else {
+        None
+    };
+
+    // If nothing was configured, return None
+    if version.is_none()
+        && package_manager.is_none()
+        && framework.is_none()
+        && start_command.is_none()
+        && build_command.is_none()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(StackConfig {
+        version,
+        package_manager,
+        framework,
+        build_command,
+        start_command,
+        install_command: None,
+    }))
+}
+
+/// Prompts for package manager selection.
+fn prompt_package_manager(stack: Stack) -> Result<Option<PackageManager>, AppError> {
+    let options: Vec<(&str, PackageManager)> = match stack {
+        Stack::NodeJs => vec![
+            ("npm (default)", PackageManager::Npm),
+            ("yarn", PackageManager::Yarn),
+            ("pnpm", PackageManager::Pnpm),
+        ],
+        Stack::Python => vec![
+            ("pip (default)", PackageManager::Pip),
+            ("poetry", PackageManager::Poetry),
+            ("pipenv", PackageManager::Pipenv),
+            ("uv", PackageManager::Uv),
+        ],
+        Stack::Java => vec![
+            ("Maven (default)", PackageManager::Maven),
+            ("Gradle", PackageManager::Gradle),
+        ],
+        _ => return Ok(None),
+    };
+
+    if options.is_empty() {
+        return Ok(None);
+    }
+
+    let labels: Vec<&str> = options.iter().map(|(l, _)| *l).collect();
+    let selected = ui::select("Package manager?", &labels)?;
+    Ok(Some(options[selected].1))
+}
+
+/// Prompts for framework selection.
+fn prompt_framework(stack: Stack) -> Result<Option<Framework>, AppError> {
+    let options: Vec<(&str, Framework)> = match stack {
+        Stack::NodeJs => vec![
+            ("Express", Framework::Express),
+            ("Fastify", Framework::Fastify),
+            ("Hono", Framework::Hono),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Python => vec![
+            ("Django", Framework::Django),
+            ("FastAPI", Framework::FastApi),
+            ("Flask", Framework::Flask),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Go => vec![
+            ("Gin", Framework::Gin),
+            ("Echo", Framework::Echo),
+            ("Fiber", Framework::Fiber),
+            ("Chi", Framework::Chi),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Ruby => vec![
+            ("Rails", Framework::Rails),
+            ("Sinatra", Framework::Sinatra),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Rust => vec![
+            ("Axum", Framework::Axum),
+            ("Actix", Framework::Actix),
+            ("Rocket", Framework::Rocket),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Java => vec![
+            ("Spring Boot", Framework::SpringBoot),
+            ("Quarkus", Framework::Quarkus),
+            ("Other / None", Framework::Other),
+        ],
+        Stack::Php => vec![
+            ("Symfony", Framework::Symfony),
+            ("Other / None", Framework::Other),
+        ],
+        _ => return Ok(None),
+    };
+
+    if options.is_empty() {
+        return Ok(None);
+    }
+
+    let use_framework = ui::confirm("Specify a framework?", false)?;
+    if !use_framework {
+        return Ok(None);
+    }
+
+    let labels: Vec<&str> = options.iter().map(|(l, _)| *l).collect();
+    let selected = ui::select("Which framework?", &labels)?;
+
+    let framework = options[selected].1;
+    if framework == Framework::Other {
+        Ok(None)
+    } else {
+        Ok(Some(framework))
+    }
+}
+
+/// Prompts for custom port.
+fn prompt_port(stack: Stack) -> Result<Option<u16>, AppError> {
+    let default_port = stack.default_port();
+
+    let use_custom = ui::confirm(
+        &format!("Use custom port? (default: {})", default_port),
+        false,
+    )?;
+
+    if !use_custom {
+        return Ok(None);
+    }
+
+    loop {
+        let input = ui::input("Port number?")?;
+        match input.parse::<u16>() {
+            Ok(port) if port > 0 => return Ok(Some(port)),
+            _ => {
+                ui::error("Please enter a valid port number (1-65535)");
+                continue;
+            }
+        }
+    }
+}
+
 /// Displays the configuration summary.
 fn display_summary(data: &AppInitData) {
     println!();
@@ -322,6 +537,13 @@ fn display_summary(data: &AppInitData) {
         .unwrap_or("None");
     let autodeploy_str = if data.autodeploy { "Yes" } else { "No" };
 
+    // Format stack config details
+    let stack_details = format_stack_config(&data.stack_config);
+    let port_str = data
+        .port
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| format!("{} (default)", data.stack.default_port()));
+
     println!("  Configuration Summary");
     println!("  {}", "-".repeat(50));
     println!();
@@ -329,11 +551,37 @@ fn display_summary(data: &AppInitData) {
     println!("  Repository:   {}", data.repository);
     println!("  SSH Key:      {}", data.ssh_key.display());
     println!("  Stack:        {}", data.stack.display_name());
+    if !stack_details.is_empty() {
+        println!("  Stack config: {}", stack_details);
+    }
+    println!("  Port:         {}", port_str);
     println!("  Database:     {}", db_str);
     println!("  Cache:        {}", cache_str);
     println!("  Domain:       {}", data.domain);
     println!("  Autodeploy:   {}", autodeploy_str);
     println!();
+}
+
+/// Formats stack configuration for display.
+fn format_stack_config(config: &Option<StackConfig>) -> String {
+    let config = match config {
+        Some(c) => c,
+        None => return String::new(),
+    };
+
+    let mut parts = Vec::new();
+
+    if let Some(version) = &config.version {
+        parts.push(format!("v{}", version));
+    }
+    if let Some(pm) = &config.package_manager {
+        parts.push(pm.display_name().to_string());
+    }
+    if let Some(fw) = &config.framework {
+        parts.push(fw.display_name().to_string());
+    }
+
+    parts.join(", ")
 }
 
 /// Actions available after viewing summary.
@@ -351,6 +599,8 @@ fn prompt_summary_action() -> Result<SummaryAction, AppError> {
         "Modify repository",
         "Modify SSH key",
         "Modify stack",
+        "Modify stack config",
+        "Modify port",
         "Modify database",
         "Modify cache",
         "Modify domain",
@@ -366,10 +616,12 @@ fn prompt_summary_action() -> Result<SummaryAction, AppError> {
         2 => SummaryAction::Modify(ModifiableField::Repository),
         3 => SummaryAction::Modify(ModifiableField::SshKey),
         4 => SummaryAction::Modify(ModifiableField::Stack),
-        5 => SummaryAction::Modify(ModifiableField::Database),
-        6 => SummaryAction::Modify(ModifiableField::Cache),
-        7 => SummaryAction::Modify(ModifiableField::Domain),
-        8 => SummaryAction::Modify(ModifiableField::Autodeploy),
+        5 => SummaryAction::Modify(ModifiableField::StackConfig),
+        6 => SummaryAction::Modify(ModifiableField::Port),
+        7 => SummaryAction::Modify(ModifiableField::Database),
+        8 => SummaryAction::Modify(ModifiableField::Cache),
+        9 => SummaryAction::Modify(ModifiableField::Domain),
+        10 => SummaryAction::Modify(ModifiableField::Autodeploy),
         _ => SummaryAction::Cancel,
     })
 }
@@ -408,6 +660,14 @@ fn modify_field(
         }
         ModifiableField::Stack => {
             data.stack = prompt_stack()?;
+            // Reset stack config when stack changes
+            data.stack_config = prompt_stack_config(data.stack)?;
+        }
+        ModifiableField::StackConfig => {
+            data.stack_config = prompt_stack_config(data.stack)?;
+        }
+        ModifiableField::Port => {
+            data.port = prompt_port(data.stack)?;
         }
         ModifiableField::Database => {
             data.database = prompt_database()?;
@@ -448,7 +708,9 @@ fn create_app(data: &AppInitData, ctx: &ExecutionContext) -> Result<(), AppError
         data.repository.clone(),
         data.ssh_key.clone(),
         data.stack,
+        data.stack_config.clone(),
         data.domain.clone(),
+        data.port,
         database_config.clone(),
         cache_config.clone(),
         data.autodeploy,
