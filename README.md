@@ -57,6 +57,20 @@ fl restart <app>        # Restart an app
 fl status               # Show status of all apps
 ```
 
+### Update App (Zero-Downtime)
+
+```bash
+fl update <app>         # Pull latest and redeploy
+```
+
+The update command:
+- Pulls latest changes from repository
+- Shows git commit before → after
+- Performs zero-downtime deployment (if blue-green enabled)
+- Runs health check on new container before switching traffic
+- If health check fails, keeps old version running
+- Suggests rollback command on failure
+
 ### Destroy App
 
 ```bash

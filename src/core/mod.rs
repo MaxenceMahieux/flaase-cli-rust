@@ -20,7 +20,7 @@ pub use config::{
     FLAASE_TRAEFIK_DYNAMIC_PATH, FLAASE_TRAEFIK_PATH,
 };
 pub use context::{CommandOutput, ExecutionContext};
-pub use deploy::{format_duration, DeployResult, Deployer, DeployStep};
+pub use deploy::{format_duration, DeployResult, Deployer, DeployStep, UpdateResult};
 pub use deployments::{
     DeploymentHistory, DeploymentRecord, DeploymentSource, DeploymentStatus, PendingApproval,
 };
