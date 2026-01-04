@@ -54,9 +54,23 @@ fl update <app>         # Update a deployed app
 fl stop <app>           # Stop an app
 fl start <app>          # Start a stopped app
 fl restart <app>        # Restart an app
-fl destroy <app>        # Remove an app completely
 fl status               # Show status of all apps
 ```
+
+### Destroy App
+
+```bash
+fl destroy <app>              # Interactive confirmation (type app name)
+fl destroy <app> --keep-data  # Keep database/cache volumes
+fl destroy <app> --force      # Skip confirmation (for scripting)
+fl destroy <app> -y           # Same as --force
+```
+
+The destroy command:
+- Requires typing the app name to confirm (safety)
+- Asks whether to delete data volumes
+- Removes containers, network, Traefik config, images
+- Warns if app is currently running
 
 ### Logs
 
