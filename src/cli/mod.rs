@@ -79,6 +79,14 @@ pub enum Commands {
     Destroy {
         /// Name of the app to destroy
         app: String,
+
+        /// Skip confirmation prompt (for scripting)
+        #[arg(long, short = 'y')]
+        force: bool,
+
+        /// Keep database and cache volumes (preserve data)
+        #[arg(long)]
+        keep_data: bool,
     },
 
     /// Rollback to a previous deployment

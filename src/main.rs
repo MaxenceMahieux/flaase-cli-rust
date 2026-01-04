@@ -73,8 +73,8 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
             Ok(())
         }
 
-        Commands::Destroy { app } => {
-            flaase::cli::deploy::destroy(&app, verbose)?;
+        Commands::Destroy { app, force, keep_data } => {
+            flaase::cli::deploy::destroy(&app, force, keep_data, verbose)?;
             Ok(())
         }
 

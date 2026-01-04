@@ -148,41 +148,138 @@ pub fn restart(app_name: &str, verbose: bool) -> Result<(), AppError> {
 }
 
 /// Destroys an app completely.
-pub fn destroy(app_name: &str, verbose: bool) -> Result<(), AppError> {
+pub fn destroy(app_name: &str, force: bool, mut keep_data: bool, verbose: bool) -> Result<(), AppError> {
     ui::header();
 
     let config = AppConfig::load(app_name)?;
-
-    // Confirmation prompt
-    ui::warning(&format!(
-        "This will permanently delete app '{}' and all its data.",
-        app_name
-    ));
-    println!();
-
-    let confirm = ui::confirm(&format!("Are you sure you want to destroy '{}'?", app_name), false)?;
-
-    if !confirm {
-        return Err(AppError::Cancelled);
-    }
-
     let ctx = ExecutionContext::new(false, verbose);
     let runtime = create_container_runtime();
     let proxy = create_reverse_proxy();
 
-    ui::info(&format!("Destroying {}...", app_name));
+    // Check if app is currently running
+    let web_container = format!("flaase-{}-web", app_name);
+    let is_running = runtime.container_is_running(&web_container, &ctx).unwrap_or(false);
+
+    if is_running {
+        ui::warning(&format!("App '{}' is currently running.", app_name));
+        println!();
+    }
+
+    let has_database = config.database.is_some();
+    let has_cache = config.cache.is_some();
+    let has_data = has_database || has_cache;
+
+    if !force {
+        // Show what will be deleted
+        ui::warning("This will permanently delete:");
+        println!();
+        println!("  {} App container (flaase-{}-web)", console::style("•").dim(), app_name);
+
+        if has_database {
+            println!("  {} Database container (flaase-{}-db)", console::style("•").dim(), app_name);
+        }
+        if has_cache {
+            println!("  {} Cache container (flaase-{}-cache)", console::style("•").dim(), app_name);
+        }
+
+        println!("  {} Docker network", console::style("•").dim());
+        println!("  {} Traefik routing config", console::style("•").dim());
+        println!("  {} App directory (/opt/flaase/apps/{})", console::style("•").dim(), app_name);
+        println!("  {} Docker images", console::style("•").dim());
+
+        if !keep_data && has_data {
+            println!(
+                "  {} {} Database/cache volumes (ALL DATA WILL BE LOST)",
+                console::style("•").red(),
+                console::style("⚠").red().bold()
+            );
+        }
+
+        println!();
+
+        // Require typing app name to confirm
+        let prompt = format!(
+            "Type '{}' to confirm destruction",
+            console::style(app_name).cyan().bold()
+        );
+        let input = ui::input(&prompt)?;
+
+        if input.trim() != app_name {
+            println!();
+            ui::error("App name doesn't match. Destruction cancelled.");
+            return Err(AppError::Cancelled);
+        }
+
+        // Ask about data if not specified via --keep-data
+        if !keep_data && has_data {
+            println!();
+            ui::warning("Database and cache volumes contain your application data.");
+            let delete_data = ui::confirm(
+                "Delete volumes? (THIS CANNOT BE UNDONE)",
+                false,
+            )?;
+
+            if !delete_data {
+                keep_data = true;
+                ui::info("Volumes will be preserved.");
+            }
+        }
+    }
+
+    println!();
+
+    // Step 1: Stop containers
+    let spinner = ui::ProgressBar::spinner("Stopping containers...");
 
     let deployer = Deployer::new(&config, runtime.as_ref(), proxy.as_ref(), &ctx);
-    deployer.destroy()?;
 
-    // Remove app directory
+    // Stop all containers
+    for container in &[
+        format!("flaase-{}-web", app_name),
+        format!("flaase-{}-db", app_name),
+        format!("flaase-{}-cache", app_name),
+    ] {
+        if runtime.container_exists(container, &ctx).unwrap_or(false) {
+            let _ = runtime.stop_container(container, &ctx);
+        }
+    }
+    spinner.finish("stopped");
+
+    // Step 2: Remove containers and optionally volumes
+    let spinner = ui::ProgressBar::spinner(if keep_data {
+        "Removing containers..."
+    } else {
+        "Removing containers and volumes..."
+    });
+
+    deployer.destroy(keep_data)?;
+    spinner.finish("removed");
+
+    // Step 3: Cleanup app directory
+    let spinner = ui::ProgressBar::spinner("Cleaning up...");
+
     let app_dir = config.app_dir();
     if app_dir.exists() {
         std::fs::remove_dir_all(&app_dir)
             .map_err(|e| AppError::Deploy(format!("Failed to remove app directory: {}", e)))?;
     }
+    spinner.finish("done");
 
-    ui::success(&format!("App '{}' has been destroyed", app_name));
+    println!();
+
+    if keep_data {
+        ui::success(&format!("App '{}' has been destroyed (data preserved)", app_name));
+        println!();
+        ui::info("To delete remaining volumes later:");
+        if has_database {
+            println!("  docker volume rm flaase-{}-db-data", app_name);
+        }
+        if has_cache {
+            println!("  docker volume rm flaase-{}-cache-data", app_name);
+        }
+    } else {
+        ui::success(&format!("App '{}' has been completely destroyed", app_name));
+    }
 
     Ok(())
 }
