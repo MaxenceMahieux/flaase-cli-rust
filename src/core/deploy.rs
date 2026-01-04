@@ -8,6 +8,7 @@ use chrono::Utc;
 use crate::core::app_config::{AppConfig, CacheType, DatabaseType, HealthCheckConfig};
 use crate::core::context::ExecutionContext;
 use crate::core::error::AppError;
+use crate::core::registry::pull_image;
 use crate::core::secrets::SecretsManager;
 use crate::providers::container::{ContainerConfig, ContainerRuntime, RestartPolicy};
 use crate::providers::git::GitProvider;
@@ -28,6 +29,7 @@ pub enum HookPhase {
 #[derive(Debug, Clone, Copy)]
 pub enum DeployStep {
     CloneRepository,
+    PullImage,
     PreBuildHooks,
     BuildImage,
     RunTests,
@@ -44,6 +46,7 @@ impl DeployStep {
     pub fn display_name(&self) -> &str {
         match self {
             Self::CloneRepository => "Cloning repository",
+            Self::PullImage => "Pulling image",
             Self::PreBuildHooks => "Running pre-build hooks",
             Self::BuildImage => "Building image",
             Self::RunTests => "Running tests",
@@ -244,11 +247,18 @@ impl<'a> Deployer<'a> {
     /// Executes a full deployment.
     pub fn deploy(&self) -> Result<DeployResult, AppError> {
         let start_time = Instant::now();
-        let repo_path = self.config.repo_path();
-        let is_first_deploy = !GitProvider::is_repo(&repo_path);
 
-        // Run deployment with cleanup on failure
-        match self.deploy_inner(&repo_path) {
+        // Branch based on deployment type
+        let deploy_result = if self.config.is_image_deployment() {
+            self.deploy_image_inner()
+        } else {
+            let repo_path = self.config.repo_path();
+            self.deploy_source_inner(&repo_path)
+        };
+
+        let is_first_deploy = self.config.deployed_at.is_none();
+
+        match deploy_result {
             Ok(()) => {
                 // Update deployed_at timestamp
                 self.update_deployed_at()?;
@@ -264,10 +274,13 @@ impl<'a> Deployer<'a> {
                 })
             }
             Err(e) => {
-                // Run failure hooks if configured
-                if self.has_hooks(HookPhase::OnFailure) {
-                    ui::warning("Running failure hooks...");
-                    let _ = self.run_hooks(HookPhase::OnFailure, &repo_path);
+                // Run failure hooks if configured (only for source deployments)
+                if self.config.is_source_deployment() {
+                    let repo_path = self.config.repo_path();
+                    if self.has_hooks(HookPhase::OnFailure) {
+                        ui::warning("Running failure hooks...");
+                        let _ = self.run_hooks(HookPhase::OnFailure, &repo_path);
+                    }
                 }
 
                 // Attempt auto-rollback if enabled and previous version exists
@@ -462,7 +475,8 @@ impl<'a> Deployer<'a> {
     }
 
     /// Inner deployment logic.
-    fn deploy_inner(&self, repo_path: &std::path::Path) -> Result<(), AppError> {
+    /// Inner deployment logic for source-based deployments (from Git).
+    fn deploy_source_inner(&self, repo_path: &std::path::Path) -> Result<(), AppError> {
         // Step 1: Clone or pull repository
         let spinner = ui::ProgressBar::spinner(DeployStep::CloneRepository.display_name());
         self.sync_repository(repo_path)?;
@@ -534,6 +548,69 @@ impl<'a> Deployer<'a> {
         }
 
         Ok(())
+    }
+
+    /// Inner deployment logic for image-based deployments (from registry).
+    fn deploy_image_inner(&self) -> Result<(), AppError> {
+        let image_config = self.config.image.as_ref().ok_or_else(|| {
+            AppError::Config("Image configuration required for image deployments".into())
+        })?;
+
+        // Step 1: Pull Docker image from registry
+        let spinner = ui::ProgressBar::spinner(DeployStep::PullImage.display_name());
+        // Load credentials for private registries
+        let credentials = if image_config.private {
+            crate::core::registry::load_credentials(&self.config.registry_auth_path())?
+        } else {
+            None
+        };
+        pull_image(image_config, credentials.as_ref(), self.ctx)?;
+        spinner.finish("done");
+
+        // Create network
+        self.runtime.create_network(&self.network_name(), self.ctx)?;
+
+        // Step 2: Start database (if configured)
+        if self.config.database.is_some() {
+            let spinner = ui::ProgressBar::spinner(DeployStep::StartDatabase.display_name());
+            self.start_database()?;
+            spinner.finish("done");
+        }
+
+        // Step 3: Start cache (if configured)
+        if self.config.cache.is_some() {
+            let spinner = ui::ProgressBar::spinner(DeployStep::StartCache.display_name());
+            self.start_cache()?;
+            spinner.finish("done");
+        }
+
+        // Step 4: Start app container
+        let spinner = ui::ProgressBar::spinner(DeployStep::StartApp.display_name());
+        self.start_app()?;
+        spinner.finish("done");
+
+        // Step 5: Configure Traefik routing
+        let spinner = ui::ProgressBar::spinner(DeployStep::ConfigureRouting.display_name());
+        self.configure_routing()?;
+        spinner.finish("done");
+
+        // Step 6: Health check
+        let spinner = ui::ProgressBar::spinner(DeployStep::HealthCheck.display_name());
+        self.health_check()?;
+        spinner.finish("done");
+
+        Ok(())
+    }
+
+    /// Returns the Docker image to use for the app container.
+    /// For image deployments: the pulled image reference
+    /// For source deployments: the locally built image
+    fn app_image(&self) -> String {
+        if let Some(image_config) = &self.config.image {
+            image_config.full_reference()
+        } else {
+            self.current_image_tag()
+        }
     }
 
     /// Cleanup containers on deployment failure.
@@ -932,7 +1009,7 @@ impl<'a> Deployer<'a> {
         // Find available host port
         let host_port = self.runtime.find_available_port(port, self.ctx)?;
 
-        let mut container = ContainerConfig::new(&container_name, &self.image_name())
+        let mut container = ContainerConfig::new(&container_name, &self.app_image())
             .port(host_port, port)
             .network(&self.network_name())
             .restart(RestartPolicy::UnlessStopped)
@@ -951,8 +1028,19 @@ impl<'a> Deployer<'a> {
             container = container.env_file(env_path.to_str().unwrap());
         }
 
-        // Set NODE_ENV for JS stacks
-        container = container.env("NODE_ENV", "production");
+        // Set NODE_ENV for JS stacks (only for source deployments)
+        if self.config.is_source_deployment() {
+            container = container.env("NODE_ENV", "production");
+        }
+
+        // Add volume mounts for image deployments
+        if !self.config.volumes.is_empty() {
+            for vol in &self.config.volumes {
+                let host_path = format!("{}/{}", self.config.data_path().display(), vol.volume_name);
+                self.ctx.create_dir(&host_path)?;
+                container = container.volume(&host_path, &vol.container_path);
+            }
+        }
 
         self.runtime.run_container(&container, self.ctx)?;
 
@@ -987,7 +1075,7 @@ impl<'a> Deployer<'a> {
         // Determine slot label
         let slot = if new_container.contains("blue") { "blue" } else { "green" };
 
-        let mut container = ContainerConfig::new(&new_container, &self.image_name())
+        let mut container = ContainerConfig::new(&new_container, &self.app_image())
             .port(host_port, port)
             .network(&self.network_name())
             .restart(RestartPolicy::UnlessStopped)
@@ -1007,8 +1095,19 @@ impl<'a> Deployer<'a> {
             container = container.env_file(env_path.to_str().unwrap());
         }
 
-        // Set NODE_ENV for JS stacks
-        container = container.env("NODE_ENV", "production");
+        // Set NODE_ENV for JS stacks (only for source deployments)
+        if self.config.is_source_deployment() {
+            container = container.env("NODE_ENV", "production");
+        }
+
+        // Add volume mounts for image deployments
+        if !self.config.volumes.is_empty() {
+            for vol in &self.config.volumes {
+                let host_path = format!("{}/{}", self.config.data_path().display(), vol.volume_name);
+                self.ctx.create_dir(&host_path)?;
+                container = container.volume(&host_path, &vol.container_path);
+            }
+        }
 
         // Start new container
         ui::info(&format!("  Starting new container: {}", new_container));
