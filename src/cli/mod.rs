@@ -100,13 +100,25 @@ pub enum Commands {
         /// Name of the app
         app: String,
 
-        /// Follow log output
+        /// Follow log output in real-time (default behavior)
         #[arg(short, long)]
         follow: bool,
 
+        /// Don't follow, just show recent logs and exit
+        #[arg(long)]
+        no_follow: bool,
+
         /// Number of lines to show
-        #[arg(short, long, default_value = "100")]
+        #[arg(short = 'n', long, default_value = "100")]
         lines: u32,
+
+        /// Filter by service: app, database, cache, or all
+        #[arg(short, long, default_value = "app")]
+        service: String,
+
+        /// Show logs since timestamp or duration (e.g., "1h", "30m", "2024-01-15")
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Manage environment variables

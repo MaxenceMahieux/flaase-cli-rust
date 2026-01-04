@@ -56,8 +56,27 @@ fl start <app>          # Start a stopped app
 fl restart <app>        # Restart an app
 fl destroy <app>        # Remove an app completely
 fl status               # Show status of all apps
-fl logs <app>           # View app logs (-f to follow)
 ```
+
+### Logs
+
+```bash
+fl logs <app>                        # Stream logs (follow by default)
+fl logs <app> --no-follow            # Show recent logs and exit
+fl logs <app> -n 200                 # Show last 200 lines
+fl logs <app> --service database     # Show database logs
+fl logs <app> --service cache        # Show Redis cache logs
+fl logs <app> --service all          # Show all services
+fl logs <app> --since 1h             # Logs from last hour
+fl logs <app> --since 30m            # Logs from last 30 minutes
+fl logs <app> --since 2024-01-15     # Logs since date
+```
+
+Logs are colorized:
+- **Red**: Errors, fatal, panic, exceptions
+- **Yellow**: Warnings, deprecated
+- **Green**: Success, started, connected, ready
+- **Dim**: Debug, trace
 
 ### Rollback
 

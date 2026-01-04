@@ -83,8 +83,15 @@ fn run_command(command: Commands, verbose: bool) -> Result<()> {
             Ok(())
         }
 
-        Commands::Logs { app, follow, lines } => {
-            flaase::cli::logs::logs(&app, follow, lines, verbose)?;
+        Commands::Logs {
+            app,
+            follow,
+            no_follow,
+            lines,
+            service,
+            since,
+        } => {
+            flaase::cli::logs::logs(&app, follow, no_follow, lines, &service, since.as_deref(), verbose)?;
             Ok(())
         }
 
