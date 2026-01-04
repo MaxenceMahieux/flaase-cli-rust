@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 
 use crate::core::app_config::{
-    AppConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType, Framework,
-    PackageManager, Stack, StackConfig,
+    AppConfig, CacheConfig, CacheType, DatabaseConfig, DatabaseType, DeploymentType, Framework,
+    HealthCheckConfig, ImageConfig, PackageManager, RegistryCredentials, Stack, StackConfig,
+    VolumeMount,
 };
 use crate::core::context::ExecutionContext;
 use crate::core::error::AppError;
+use crate::core::registry::{detect_default_port, parse_image_reference, save_credentials};
 use crate::core::secrets::{AppSecrets, SecretsManager};
 use crate::core::FLAASE_APPS_PATH;
 use crate::providers::ssh::{SshKeyType, SshProvider};
@@ -16,9 +18,9 @@ use crate::utils::validation::{
     is_app_name_available, validate_app_name, validate_domain, validate_git_ssh_url,
 };
 
-/// Collected app configuration data during prompts.
+/// Source deployment configuration.
 #[derive(Debug, Clone)]
-struct AppInitData {
+struct SourceInitData {
     name: String,
     repository: String,
     ssh_key: PathBuf,
@@ -31,9 +33,23 @@ struct AppInitData {
     autodeploy: bool,
 }
 
-/// Fields that can be modified in the summary.
+/// Image deployment configuration.
+#[derive(Debug, Clone)]
+struct ImageInitData {
+    name: String,
+    image: ImageConfig,
+    port: u16,
+    volumes: Vec<VolumeMount>,
+    database: Option<DatabaseType>,
+    cache: Option<CacheType>,
+    domain: String,
+    health_check: HealthCheckConfig,
+    credentials: Option<RegistryCredentials>,
+}
+
+/// Fields that can be modified in the summary (source deployment).
 #[derive(Debug, Clone, Copy)]
-enum ModifiableField {
+enum SourceModifiableField {
     AppName,
     Repository,
     SshKey,
@@ -44,6 +60,19 @@ enum ModifiableField {
     Cache,
     Domain,
     Autodeploy,
+}
+
+/// Fields that can be modified in the summary (image deployment).
+#[derive(Debug, Clone, Copy)]
+enum ImageModifiableField {
+    AppName,
+    Image,
+    Port,
+    Volumes,
+    Database,
+    Cache,
+    Domain,
+    HealthCheck,
 }
 
 /// Executes the app init command.
@@ -59,28 +88,50 @@ pub fn init(verbose: bool) -> Result<(), AppError> {
         ));
     }
 
+    // Ask for deployment type
+    let deployment_type = prompt_deployment_type()?;
+
+    match deployment_type {
+        DeploymentType::Source => init_source_deployment(&ctx),
+        DeploymentType::Image => init_image_deployment(&ctx),
+    }
+}
+
+/// Prompts for deployment type.
+fn prompt_deployment_type() -> Result<DeploymentType, AppError> {
+    let options = ["From Git repository", "From Docker image"];
+    let selected = ui::select("What type of deployment?", &options)?;
+
+    Ok(match selected {
+        0 => DeploymentType::Source,
+        _ => DeploymentType::Image,
+    })
+}
+
+/// Initializes a source-based deployment (from Git repository).
+fn init_source_deployment(ctx: &ExecutionContext) -> Result<(), AppError> {
     // Collect all configuration through prompts
-    let mut data = collect_app_data(&ctx)?;
+    let mut data = collect_source_data(ctx)?;
 
     // Show summary and allow modifications
     loop {
-        display_summary(&data);
+        display_source_summary(&data);
 
-        let action = prompt_summary_action()?;
+        let action = prompt_source_summary_action()?;
 
         match action {
-            SummaryAction::Confirm => break,
-            SummaryAction::Modify(field) => {
-                modify_field(&mut data, field, &ctx)?;
+            SourceSummaryAction::Confirm => break,
+            SourceSummaryAction::Modify(field) => {
+                modify_source_field(&mut data, field, ctx)?;
             }
-            SummaryAction::Cancel => {
+            SourceSummaryAction::Cancel => {
                 return Err(AppError::Cancelled);
             }
         }
     }
 
     // Create the app
-    create_app(&data, &ctx)?;
+    create_source_app(&data, ctx)?;
 
     println!();
     ui::success(&format!(
@@ -92,8 +143,54 @@ pub fn init(verbose: bool) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Collects all app configuration through interactive prompts.
-fn collect_app_data(ctx: &ExecutionContext) -> Result<AppInitData, AppError> {
+/// Initializes an image-based deployment (from Docker registry).
+fn init_image_deployment(ctx: &ExecutionContext) -> Result<(), AppError> {
+    // Collect all configuration through prompts
+    let mut data = collect_image_data()?;
+
+    // Show summary and allow modifications
+    loop {
+        display_image_summary(&data);
+
+        let action = prompt_image_summary_action()?;
+
+        match action {
+            ImageSummaryAction::Confirm => break,
+            ImageSummaryAction::Modify(field) => {
+                modify_image_field(&mut data, field)?;
+            }
+            ImageSummaryAction::Cancel => {
+                return Err(AppError::Cancelled);
+            }
+        }
+    }
+
+    // Create the app
+    create_image_app(&data, ctx)?;
+
+    println!();
+    ui::success(&format!(
+        "App configured at {}/{}/",
+        FLAASE_APPS_PATH, data.name
+    ));
+    ui::info(&format!("Deploy with: fl deploy {}", data.name));
+
+    Ok(())
+}
+
+// ============================================================================
+// Source Deployment Functions
+// ============================================================================
+
+/// Actions available after viewing source summary.
+enum SourceSummaryAction {
+    Confirm,
+    Modify(SourceModifiableField),
+    Cancel,
+}
+
+/// Collects source deployment configuration through interactive prompts.
+fn collect_source_data(ctx: &ExecutionContext) -> Result<SourceInitData, AppError> {
     // 1. App name
     let name = prompt_app_name()?;
 
@@ -142,7 +239,7 @@ fn collect_app_data(ctx: &ExecutionContext) -> Result<AppInitData, AppError> {
     // Get port if not using default
     let port = prompt_port(stack)?;
 
-    Ok(AppInitData {
+    Ok(SourceInitData {
         name,
         repository,
         ssh_key,
@@ -521,8 +618,8 @@ fn prompt_port(stack: Stack) -> Result<Option<u16>, AppError> {
     }
 }
 
-/// Displays the configuration summary.
-fn display_summary(data: &AppInitData) {
+/// Displays the source deployment configuration summary.
+fn display_source_summary(data: &SourceInitData) {
     println!();
 
     let db_str = data
@@ -544,7 +641,7 @@ fn display_summary(data: &AppInitData) {
         .map(|p| p.to_string())
         .unwrap_or_else(|| format!("{} (default)", data.stack.default_port()));
 
-    println!("  Configuration Summary");
+    println!("  Configuration Summary (Source Deployment)");
     println!("  {}", "-".repeat(50));
     println!();
     println!("  App name:     {}", data.name);
@@ -584,15 +681,8 @@ fn format_stack_config(config: &Option<StackConfig>) -> String {
     parts.join(", ")
 }
 
-/// Actions available after viewing summary.
-enum SummaryAction {
-    Confirm,
-    Modify(ModifiableField),
-    Cancel,
-}
-
-/// Prompts for action after viewing summary.
-fn prompt_summary_action() -> Result<SummaryAction, AppError> {
+/// Prompts for action after viewing source summary.
+fn prompt_source_summary_action() -> Result<SourceSummaryAction, AppError> {
     let options = [
         "Confirm and create",
         "Modify app name",
@@ -611,32 +701,32 @@ fn prompt_summary_action() -> Result<SummaryAction, AppError> {
     let selected = ui::select("What would you like to do?", &options)?;
 
     Ok(match selected {
-        0 => SummaryAction::Confirm,
-        1 => SummaryAction::Modify(ModifiableField::AppName),
-        2 => SummaryAction::Modify(ModifiableField::Repository),
-        3 => SummaryAction::Modify(ModifiableField::SshKey),
-        4 => SummaryAction::Modify(ModifiableField::Stack),
-        5 => SummaryAction::Modify(ModifiableField::StackConfig),
-        6 => SummaryAction::Modify(ModifiableField::Port),
-        7 => SummaryAction::Modify(ModifiableField::Database),
-        8 => SummaryAction::Modify(ModifiableField::Cache),
-        9 => SummaryAction::Modify(ModifiableField::Domain),
-        10 => SummaryAction::Modify(ModifiableField::Autodeploy),
-        _ => SummaryAction::Cancel,
+        0 => SourceSummaryAction::Confirm,
+        1 => SourceSummaryAction::Modify(SourceModifiableField::AppName),
+        2 => SourceSummaryAction::Modify(SourceModifiableField::Repository),
+        3 => SourceSummaryAction::Modify(SourceModifiableField::SshKey),
+        4 => SourceSummaryAction::Modify(SourceModifiableField::Stack),
+        5 => SourceSummaryAction::Modify(SourceModifiableField::StackConfig),
+        6 => SourceSummaryAction::Modify(SourceModifiableField::Port),
+        7 => SourceSummaryAction::Modify(SourceModifiableField::Database),
+        8 => SourceSummaryAction::Modify(SourceModifiableField::Cache),
+        9 => SourceSummaryAction::Modify(SourceModifiableField::Domain),
+        10 => SourceSummaryAction::Modify(SourceModifiableField::Autodeploy),
+        _ => SourceSummaryAction::Cancel,
     })
 }
 
-/// Modifies a specific field.
-fn modify_field(
-    data: &mut AppInitData,
-    field: ModifiableField,
+/// Modifies a specific field in source deployment.
+fn modify_source_field(
+    data: &mut SourceInitData,
+    field: SourceModifiableField,
     ctx: &ExecutionContext,
 ) -> Result<(), AppError> {
     match field {
-        ModifiableField::AppName => {
+        SourceModifiableField::AppName => {
             data.name = prompt_app_name()?;
         }
-        ModifiableField::Repository => {
+        SourceModifiableField::Repository => {
             data.repository = prompt_repository()?;
             // Re-test SSH connection
             ui::info("Testing SSH connection to repository...");
@@ -647,7 +737,7 @@ fn modify_field(
                 ui::warning("Could not verify SSH connection");
             }
         }
-        ModifiableField::SshKey => {
+        SourceModifiableField::SshKey => {
             data.ssh_key = prompt_ssh_key(ctx)?;
             // Re-test SSH connection
             ui::info("Testing SSH connection to repository...");
@@ -658,27 +748,27 @@ fn modify_field(
                 ui::warning("Could not verify SSH connection");
             }
         }
-        ModifiableField::Stack => {
+        SourceModifiableField::Stack => {
             data.stack = prompt_stack()?;
             // Reset stack config when stack changes
             data.stack_config = prompt_stack_config(data.stack)?;
         }
-        ModifiableField::StackConfig => {
+        SourceModifiableField::StackConfig => {
             data.stack_config = prompt_stack_config(data.stack)?;
         }
-        ModifiableField::Port => {
+        SourceModifiableField::Port => {
             data.port = prompt_port(data.stack)?;
         }
-        ModifiableField::Database => {
+        SourceModifiableField::Database => {
             data.database = prompt_database()?;
         }
-        ModifiableField::Cache => {
+        SourceModifiableField::Cache => {
             data.cache = prompt_cache()?;
         }
-        ModifiableField::Domain => {
+        SourceModifiableField::Domain => {
             data.domain = prompt_domain()?;
         }
-        ModifiableField::Autodeploy => {
+        SourceModifiableField::Autodeploy => {
             data.autodeploy = prompt_autodeploy()?;
         }
     }
@@ -686,8 +776,8 @@ fn modify_field(
     Ok(())
 }
 
-/// Creates the app directories and configuration files.
-fn create_app(data: &AppInitData, ctx: &ExecutionContext) -> Result<(), AppError> {
+/// Creates the source app directories and configuration files.
+fn create_source_app(data: &SourceInitData, ctx: &ExecutionContext) -> Result<(), AppError> {
     ui::info("Creating app configuration...");
 
     // Create app directory structure
@@ -703,7 +793,7 @@ fn create_app(data: &AppInitData, ctx: &ExecutionContext) -> Result<(), AppError
 
     let cache_config = data.cache.map(CacheConfig::new);
 
-    let config = AppConfig::new(
+    let config = AppConfig::new_source(
         data.name.clone(),
         data.repository.clone(),
         data.ssh_key.clone(),
@@ -718,6 +808,335 @@ fn create_app(data: &AppInitData, ctx: &ExecutionContext) -> Result<(), AppError
 
     // Save config.yml
     config.save()?;
+
+    // Generate and save secrets if needed
+    let mut secrets = AppSecrets::default();
+
+    if let Some(db_type) = data.database {
+        secrets.database = Some(SecretsManager::generate_database_secrets(
+            db_type, &data.name,
+        ));
+    }
+
+    if let Some(cache_type) = data.cache {
+        secrets.cache = Some(SecretsManager::generate_cache_secrets(cache_type));
+    }
+
+    // Save secrets file
+    if secrets.database.is_some() || secrets.cache.is_some() {
+        SecretsManager::save_secrets(&config.secrets_path(), &secrets)?;
+
+        // Generate .env file with connection URLs
+        let db_name = database_config
+            .as_ref()
+            .map(|d| d.name.as_str())
+            .unwrap_or("");
+        let env_vars = SecretsManager::generate_env_vars(
+            &secrets,
+            data.database,
+            db_name,
+            data.cache,
+            &data.name,
+        );
+
+        SecretsManager::write_env_file(&config.auto_env_path(), &env_vars)?;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Image Deployment Functions
+// ============================================================================
+
+/// Actions available after viewing image summary.
+enum ImageSummaryAction {
+    Confirm,
+    Modify(ImageModifiableField),
+    Cancel,
+}
+
+/// Collects image deployment configuration through interactive prompts.
+fn collect_image_data() -> Result<ImageInitData, AppError> {
+    // 1. App name
+    let name = prompt_app_name()?;
+
+    // 2. Docker image
+    let (image, credentials) = prompt_docker_image()?;
+
+    // 3. Port
+    let detected_port = detect_default_port(&image.name);
+    let port = prompt_image_port(detected_port)?;
+
+    // 4. Volumes
+    let volumes = prompt_volumes(&name)?;
+
+    // 5. Database selection
+    let database = prompt_database()?;
+
+    // 6. Cache selection
+    let cache = prompt_cache()?;
+
+    // 7. Domain
+    let domain = prompt_domain()?;
+
+    // 8. Health check
+    let health_check = prompt_health_check()?;
+
+    Ok(ImageInitData {
+        name,
+        image,
+        port,
+        volumes,
+        database,
+        cache,
+        domain,
+        health_check,
+        credentials,
+    })
+}
+
+/// Prompts for Docker image configuration.
+fn prompt_docker_image() -> Result<(ImageConfig, Option<RegistryCredentials>), AppError> {
+    loop {
+        let input = ui::input_with_placeholder("Docker image?", Some("nginx:latest"))?;
+
+        match parse_image_reference(&input) {
+            Ok(mut image) => {
+                // Check if private registry
+                let is_private = ui::confirm("Is this a private registry?", false)?;
+                image.private = is_private;
+
+                let credentials = if is_private {
+                    let username = ui::input("Registry username?")?;
+                    let password = ui::password("Registry password?")?;
+                    Some(RegistryCredentials::new(&username, &password))
+                } else {
+                    None
+                };
+
+                return Ok((image, credentials));
+            }
+            Err(e) => {
+                ui::error(&e.to_string());
+                continue;
+            }
+        }
+    }
+}
+
+/// Prompts for port with auto-detected default.
+fn prompt_image_port(detected: Option<u16>) -> Result<u16, AppError> {
+    let default_port = detected.unwrap_or(8080);
+    let prompt = format!("Which port does the app expose? (detected: {})", default_port);
+
+    loop {
+        let input = ui::input_with_default(&prompt, &default_port.to_string())?;
+        match input.parse::<u16>() {
+            Ok(port) if port > 0 => return Ok(port),
+            _ => {
+                ui::error("Please enter a valid port number (1-65535)");
+                continue;
+            }
+        }
+    }
+}
+
+/// Prompts for volume configuration.
+fn prompt_volumes(app_name: &str) -> Result<Vec<VolumeMount>, AppError> {
+    let mut volumes = Vec::new();
+
+    if !ui::confirm("Do you need persistent volumes?", false)? {
+        return Ok(volumes);
+    }
+
+    loop {
+        let container_path = ui::input_with_placeholder(
+            "Container path for volume?",
+            Some("/var/lib/data"),
+        )?;
+
+        if container_path.is_empty() {
+            break;
+        }
+
+        // Generate volume name from app name and path
+        let path_suffix = container_path
+            .trim_start_matches('/')
+            .replace('/', "-")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-')
+            .collect::<String>();
+        let volume_name = format!("{}-{}", app_name, path_suffix);
+
+        volumes.push(VolumeMount::new(&container_path, &volume_name));
+
+        if !ui::confirm("Add another volume?", false)? {
+            break;
+        }
+    }
+
+    Ok(volumes)
+}
+
+/// Prompts for health check configuration.
+fn prompt_health_check() -> Result<HealthCheckConfig, AppError> {
+    let endpoint = ui::input_with_default("Health check endpoint?", "/")?;
+    let timeout = ui::input_with_default("Health check timeout (seconds)?", "30")?
+        .parse::<u32>()
+        .unwrap_or(30);
+
+    Ok(HealthCheckConfig {
+        endpoint,
+        timeout,
+        interval: 5,
+        retries: 3,
+    })
+}
+
+/// Displays the image deployment configuration summary.
+fn display_image_summary(data: &ImageInitData) {
+    println!();
+
+    let db_str = data
+        .database
+        .as_ref()
+        .map(|d| d.display_name())
+        .unwrap_or("None");
+    let cache_str = data
+        .cache
+        .as_ref()
+        .map(|c| c.display_name())
+        .unwrap_or("None");
+    let volumes_str = if data.volumes.is_empty() {
+        "None".to_string()
+    } else {
+        data.volumes
+            .iter()
+            .map(|v| v.container_path.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let private_str = if data.image.private { " (private)" } else { "" };
+
+    println!("  Configuration Summary (Image Deployment)");
+    println!("  {}", "-".repeat(50));
+    println!();
+    println!("  App name:     {}", data.name);
+    println!("  Image:        {}{}", data.image.full_reference(), private_str);
+    println!("  Registry:     {}", data.image.registry.display_name());
+    println!("  Port:         {}", data.port);
+    println!("  Volumes:      {}", volumes_str);
+    println!("  Database:     {}", db_str);
+    println!("  Cache:        {}", cache_str);
+    println!("  Domain:       {}", data.domain);
+    println!("  Health check: {} ({}s timeout)", data.health_check.endpoint, data.health_check.timeout);
+    println!();
+}
+
+/// Prompts for action after viewing image summary.
+fn prompt_image_summary_action() -> Result<ImageSummaryAction, AppError> {
+    let options = [
+        "Confirm and create",
+        "Modify app name",
+        "Modify image",
+        "Modify port",
+        "Modify volumes",
+        "Modify database",
+        "Modify cache",
+        "Modify domain",
+        "Modify health check",
+        "Cancel",
+    ];
+
+    let selected = ui::select("What would you like to do?", &options)?;
+
+    Ok(match selected {
+        0 => ImageSummaryAction::Confirm,
+        1 => ImageSummaryAction::Modify(ImageModifiableField::AppName),
+        2 => ImageSummaryAction::Modify(ImageModifiableField::Image),
+        3 => ImageSummaryAction::Modify(ImageModifiableField::Port),
+        4 => ImageSummaryAction::Modify(ImageModifiableField::Volumes),
+        5 => ImageSummaryAction::Modify(ImageModifiableField::Database),
+        6 => ImageSummaryAction::Modify(ImageModifiableField::Cache),
+        7 => ImageSummaryAction::Modify(ImageModifiableField::Domain),
+        8 => ImageSummaryAction::Modify(ImageModifiableField::HealthCheck),
+        _ => ImageSummaryAction::Cancel,
+    })
+}
+
+/// Modifies a specific field in image deployment.
+fn modify_image_field(
+    data: &mut ImageInitData,
+    field: ImageModifiableField,
+) -> Result<(), AppError> {
+    match field {
+        ImageModifiableField::AppName => {
+            data.name = prompt_app_name()?;
+        }
+        ImageModifiableField::Image => {
+            let (image, credentials) = prompt_docker_image()?;
+            data.image = image;
+            data.credentials = credentials;
+        }
+        ImageModifiableField::Port => {
+            let detected = detect_default_port(&data.image.name);
+            data.port = prompt_image_port(detected)?;
+        }
+        ImageModifiableField::Volumes => {
+            data.volumes = prompt_volumes(&data.name)?;
+        }
+        ImageModifiableField::Database => {
+            data.database = prompt_database()?;
+        }
+        ImageModifiableField::Cache => {
+            data.cache = prompt_cache()?;
+        }
+        ImageModifiableField::Domain => {
+            data.domain = prompt_domain()?;
+        }
+        ImageModifiableField::HealthCheck => {
+            data.health_check = prompt_health_check()?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Creates the image app directories and configuration files.
+fn create_image_app(data: &ImageInitData, ctx: &ExecutionContext) -> Result<(), AppError> {
+    ui::info("Creating app configuration...");
+
+    // Create app directory structure
+    let app_dir = format!("{}/{}", FLAASE_APPS_PATH, data.name);
+    ctx.create_dir(&app_dir)?;
+    ctx.create_dir(&format!("{}/data", app_dir))?;
+
+    // Build app config
+    let database_config = data
+        .database
+        .map(|db_type| DatabaseConfig::new(db_type, &data.name));
+
+    let cache_config = data.cache.map(CacheConfig::new);
+
+    let config = AppConfig::new_image(
+        data.name.clone(),
+        data.image.clone(),
+        data.domain.clone(),
+        data.port,
+        data.volumes.clone(),
+        database_config.clone(),
+        cache_config.clone(),
+        Some(data.health_check.clone()),
+    );
+
+    // Save config.yml
+    config.save()?;
+
+    // Save registry credentials if provided
+    if let Some(creds) = &data.credentials {
+        save_credentials(&config.registry_auth_path(), creds)?;
+    }
 
     // Generate and save secrets if needed
     let mut secrets = AppSecrets::default();
