@@ -1241,8 +1241,9 @@ impl<'a> Deployer<'a> {
     }
 
     /// Destroys all resources for this app.
-    pub fn destroy(&self) -> Result<(), AppError> {
-        // Stop and remove containers
+    /// If keep_data is true, database and cache volumes are preserved.
+    pub fn destroy(&self, keep_data: bool) -> Result<(), AppError> {
+        // Remove containers (they should already be stopped)
         let containers = [
             self.web_container_name(),
             self.db_container_name(),
@@ -1256,17 +1257,56 @@ impl<'a> Deployer<'a> {
             }
         }
 
+        // Remove volumes if not keeping data
+        if !keep_data {
+            let volumes = [
+                format!("flaase-{}-db-data", self.config.name),
+                format!("flaase-{}-cache-data", self.config.name),
+            ];
+
+            for volume in &volumes {
+                // Use -f to ignore errors if volume doesn't exist
+                self.ctx
+                    .run_command("docker", &["volume", "rm", "-f", volume])
+                    .ok();
+            }
+        }
+
         // Remove network
         let network = self.network_name();
         if self.runtime.network_exists(&network, self.ctx)? {
-            self.ctx.run_command("docker", &["network", "rm", &network])?;
+            self.ctx
+                .run_command("docker", &["network", "rm", &network])
+                .ok(); // Ignore errors, network might be in use
         }
 
         // Remove Traefik config
         self.proxy.remove_app_config(&self.config.name, self.ctx)?;
 
-        // Remove Docker image
-        self.ctx.run_command("docker", &["rmi", "-f", &self.image_name()]).ok();
+        // Remove Docker images (current and previous)
+        let image = self.image_name();
+        self.ctx
+            .run_command("docker", &["rmi", "-f", &image])
+            .ok();
+        self.ctx
+            .run_command("docker", &["rmi", "-f", &format!("{}:latest", image)])
+            .ok();
+        self.ctx
+            .run_command("docker", &["rmi", "-f", &format!("{}:previous", image)])
+            .ok();
+
+        // Also remove any versioned tags
+        let output = self.ctx.run_command(
+            "docker",
+            &["images", "--format", "{{.Repository}}:{{.Tag}}", &image],
+        );
+        if let Ok(output) = output {
+            for line in output.stdout.lines() {
+                if !line.is_empty() {
+                    self.ctx.run_command("docker", &["rmi", "-f", line]).ok();
+                }
+            }
+        }
 
         Ok(())
     }
