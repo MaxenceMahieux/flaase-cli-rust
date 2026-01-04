@@ -66,6 +66,16 @@ pub struct DeployResult {
     pub is_first_deploy: bool,
 }
 
+/// Result of an update operation.
+pub struct UpdateResult {
+    pub app_name: String,
+    pub url: String,
+    pub duration: Duration,
+    pub old_commit: Option<String>,
+    pub new_commit: String,
+    pub had_changes: bool,
+}
+
 /// Deployment orchestrator.
 pub struct Deployer<'a> {
     config: &'a AppConfig,
@@ -282,6 +292,170 @@ impl<'a> Deployer<'a> {
                 Err(e)
             }
         }
+    }
+
+    /// Executes an update (zero-downtime deployment with before/after info).
+    pub fn update(&self) -> Result<UpdateResult, AppError> {
+        let start_time = Instant::now();
+        let repo_path = self.config.repo_path();
+
+        // Check if app was previously deployed
+        if !GitProvider::is_repo(&repo_path) {
+            return Err(AppError::Deploy(
+                "App not deployed yet. Use 'fl deploy' for initial deployment.".into()
+            ));
+        }
+
+        // Get current commit SHA before pulling
+        let old_commit = self.get_commit_sha(&repo_path).ok();
+
+        // Run update with rollback on failure
+        match self.update_inner(&repo_path) {
+            Ok((new_commit, had_changes)) => {
+                // Update deployed_at timestamp
+                self.update_deployed_at()?;
+
+                let duration = start_time.elapsed();
+                let url = format!("https://{}", self.config.primary_domain());
+
+                Ok(UpdateResult {
+                    app_name: self.config.name.clone(),
+                    url,
+                    duration,
+                    old_commit,
+                    new_commit,
+                    had_changes,
+                })
+            }
+            Err(e) => {
+                // Run failure hooks if configured
+                if self.has_hooks(HookPhase::OnFailure) {
+                    ui::warning("Running failure hooks...");
+                    let _ = self.run_hooks(HookPhase::OnFailure, &repo_path);
+                }
+
+                // Attempt auto-rollback if enabled and previous version exists
+                if self.should_auto_rollback() && self.can_rollback() {
+                    ui::warning("Update failed, attempting auto-rollback...");
+                    match self.rollback(None) {
+                        Ok(_) => {
+                            ui::success("Auto-rollback successful");
+                            return Err(AppError::Deploy(format!(
+                                "Update failed but auto-rollback succeeded. Original error: {}",
+                                e
+                            )));
+                        }
+                        Err(rb_err) => {
+                            ui::error(&format!("Auto-rollback failed: {}", rb_err));
+                        }
+                    }
+                }
+
+                // Cleanup on failure
+                self.cleanup_on_failure();
+                Err(e)
+            }
+        }
+    }
+
+    /// Inner update logic - returns (new_commit_sha, had_changes).
+    fn update_inner(&self, repo_path: &std::path::Path) -> Result<(String, bool), AppError> {
+        // Step 1: Pull latest changes
+        let spinner = ui::ProgressBar::spinner("Pulling latest changes");
+        let had_changes = GitProvider::pull(repo_path, &self.config.ssh_key, self.ctx)?;
+        spinner.finish(if had_changes { "updated" } else { "no changes" });
+
+        // Get new commit SHA
+        let new_commit = self.get_commit_sha(repo_path)?;
+
+        // If no changes and app is running, we're done
+        if !had_changes {
+            let container = self.web_container_name();
+            if self.runtime.container_is_running(&container, self.ctx).unwrap_or(false) {
+                return Ok((new_commit, false));
+            }
+            // App not running, continue with deployment
+        }
+
+        // Step 2: Run pre-build hooks
+        if self.has_hooks(HookPhase::PreBuild) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PreBuildHooks.display_name());
+            self.run_hooks(HookPhase::PreBuild, repo_path)?;
+            spinner.finish("done");
+        }
+
+        // Step 3: Build Docker image
+        let spinner = ui::ProgressBar::spinner(DeployStep::BuildImage.display_name());
+        let _commit_sha = self.build_image(repo_path)?;
+        spinner.finish("done");
+
+        // Step 4: Run tests
+        if self.has_tests_enabled() {
+            let spinner = ui::ProgressBar::spinner(DeployStep::RunTests.display_name());
+            self.run_tests(repo_path)?;
+            spinner.finish("done");
+        }
+
+        // Step 5: Run pre-deploy hooks
+        if self.has_hooks(HookPhase::PreDeploy) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PreDeployHooks.display_name());
+            self.run_hooks(HookPhase::PreDeploy, repo_path)?;
+            spinner.finish("done");
+        }
+
+        // Ensure network exists
+        self.runtime.create_network(&self.network_name(), self.ctx)?;
+
+        // Step 6: Start database (if configured and not running)
+        if self.config.database.is_some() {
+            let db_container = self.db_container_name();
+            if !self.runtime.container_is_running(&db_container, self.ctx).unwrap_or(false) {
+                let spinner = ui::ProgressBar::spinner(DeployStep::StartDatabase.display_name());
+                self.start_database()?;
+                spinner.finish("done");
+            }
+        }
+
+        // Step 7: Start cache (if configured and not running)
+        if self.config.cache.is_some() {
+            let cache_container = self.cache_container_name();
+            if !self.runtime.container_is_running(&cache_container, self.ctx).unwrap_or(false) {
+                let spinner = ui::ProgressBar::spinner(DeployStep::StartCache.display_name());
+                self.start_cache()?;
+                spinner.finish("done");
+            }
+        }
+
+        // Step 8: Start app container (with blue-green if enabled)
+        // This handles:
+        // - Starting new container
+        // - Health check on new container
+        // - Switching traffic only if health check passes
+        // - Stopping old container
+        let spinner = ui::ProgressBar::spinner(DeployStep::StartApp.display_name());
+        self.start_app()?;
+        spinner.finish("done");
+
+        // Step 9: Configure Traefik routing (if not blue-green, which handles this)
+        if !self.is_blue_green_enabled() {
+            let spinner = ui::ProgressBar::spinner(DeployStep::ConfigureRouting.display_name());
+            self.configure_routing()?;
+            spinner.finish("done");
+
+            // Step 10: Health check (if not blue-green, which already did this)
+            let spinner = ui::ProgressBar::spinner(DeployStep::HealthCheck.display_name());
+            self.health_check()?;
+            spinner.finish("done");
+        }
+
+        // Step 11: Run post-deploy hooks
+        if self.has_hooks(HookPhase::PostDeploy) {
+            let spinner = ui::ProgressBar::spinner(DeployStep::PostDeployHooks.display_name());
+            self.run_hooks(HookPhase::PostDeploy, repo_path)?;
+            spinner.finish("done");
+        }
+
+        Ok((new_commit, had_changes))
     }
 
     /// Inner deployment logic.

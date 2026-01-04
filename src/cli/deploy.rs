@@ -284,11 +284,90 @@ pub fn destroy(app_name: &str, force: bool, mut keep_data: bool, verbose: bool) 
     Ok(())
 }
 
-/// Updates a deployed app.
+/// Updates a deployed app with zero-downtime.
 pub fn update(app_name: &str, verbose: bool) -> Result<(), AppError> {
-    // Update is the same as deploy for now
-    // In the future, this could implement zero-downtime blue-green deployment
-    deploy(app_name, verbose)
+    ui::header();
+
+    // Load app config
+    let config = AppConfig::load(app_name)?;
+
+    // Check if server is initialized
+    if !crate::core::config::ServerConfig::is_initialized() {
+        return Err(AppError::Config(
+            "Server not initialized. Run 'fl server init' first.".into(),
+        ));
+    }
+
+    let ctx = ExecutionContext::new(false, verbose);
+    let runtime = create_container_runtime();
+    let proxy = create_reverse_proxy();
+
+    ui::section(&format!("Updating {}", app_name));
+    println!();
+
+    let deployer = Deployer::new(&config, runtime.as_ref(), proxy.as_ref(), &ctx);
+
+    match deployer.update() {
+        Ok(result) => {
+            println!();
+
+            // Show commit change
+            if result.had_changes {
+                if let Some(old) = &result.old_commit {
+                    let old_short = if old.len() >= 7 { &old[..7] } else { old };
+                    let new_short = if result.new_commit.len() >= 7 {
+                        &result.new_commit[..7]
+                    } else {
+                        &result.new_commit
+                    };
+                    ui::info(&format!(
+                        "Updated: {} → {}",
+                        console::style(old_short).dim(),
+                        console::style(new_short).green()
+                    ));
+                } else {
+                    let new_short = if result.new_commit.len() >= 7 {
+                        &result.new_commit[..7]
+                    } else {
+                        &result.new_commit
+                    };
+                    ui::info(&format!("Deployed: {}", console::style(new_short).green()));
+                }
+            } else {
+                let commit_short = if result.new_commit.len() >= 7 {
+                    &result.new_commit[..7]
+                } else {
+                    &result.new_commit
+                };
+                ui::info(&format!(
+                    "Already up-to-date at {}",
+                    console::style(commit_short).cyan()
+                ));
+            }
+
+            ui::success(&format!(
+                "Updated in {}",
+                format_duration(result.duration)
+            ));
+            println!();
+            ui::url(&result.url);
+
+            Ok(())
+        }
+        Err(e) => {
+            ui::step_failed();
+            println!();
+            ui::error(&format!("Update failed: {}", e));
+            println!();
+            ui::info("To see logs, run:");
+            ui::info(&format!("  fl logs {}", app_name));
+            println!();
+            ui::info("To rollback to previous version:");
+            ui::info(&format!("  fl rollback {}", app_name));
+
+            Err(e)
+        }
+    }
 }
 
 /// Rolls back to a previous deployment.
