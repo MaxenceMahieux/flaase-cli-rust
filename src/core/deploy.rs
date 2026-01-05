@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 
-use crate::core::app_config::{AppConfig, CacheType, DatabaseType, HealthCheckConfig};
+use crate::core::app_config::{AppConfig, CacheType, DatabaseType, HealthCheckConfig, Stack};
 use crate::core::context::ExecutionContext;
 use crate::core::error::AppError;
 use crate::core::registry::pull_image;
 use crate::core::secrets::SecretsManager;
+use crate::core::stack_detection::validate_nextjs_standalone_config;
 use crate::providers::container::{ContainerConfig, ContainerRuntime, RestartPolicy};
 use crate::providers::git::GitProvider;
 use crate::providers::reverse_proxy::ReverseProxy;
@@ -393,6 +394,9 @@ impl<'a> Deployer<'a> {
             // App not running, continue with deployment
         }
 
+        // Validate Next.js standalone configuration if applicable
+        self.validate_stack_requirements(repo_path)?;
+
         // Step 2: Run pre-build hooks
         if self.has_hooks(HookPhase::PreBuild) {
             let spinner = ui::ProgressBar::spinner(DeployStep::PreBuildHooks.display_name());
@@ -481,6 +485,9 @@ impl<'a> Deployer<'a> {
         let spinner = ui::ProgressBar::spinner(DeployStep::CloneRepository.display_name());
         self.sync_repository(repo_path)?;
         spinner.finish("done");
+
+        // Validate Next.js standalone configuration if applicable
+        self.validate_stack_requirements(repo_path)?;
 
         // Step 2: Run pre-build hooks
         if self.has_hooks(HookPhase::PreBuild) {
@@ -643,6 +650,25 @@ impl<'a> Deployer<'a> {
         } else {
             // Clone repository
             GitProvider::clone(repository, repo_path, ssh_key, self.ctx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validates stack-specific requirements before building.
+    /// Currently checks Next.js standalone output configuration.
+    fn validate_stack_requirements(&self, repo_path: &Path) -> Result<(), AppError> {
+        // Only validate for Next.js stack
+        if let Some(Stack::NextJs) = self.config.stack {
+            // Skip validation if user provides their own Dockerfile
+            if dockerfile::exists(repo_path) {
+                return Ok(());
+            }
+
+            // Validate Next.js standalone configuration
+            if let Err(msg) = validate_nextjs_standalone_config(repo_path) {
+                return Err(AppError::Validation(msg));
+            }
         }
 
         Ok(())
