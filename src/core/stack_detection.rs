@@ -417,6 +417,60 @@ fn extract_toml_value(content: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Validates that a Next.js project has standalone output configured.
+/// Returns Ok(()) if valid, or an error message if standalone is not configured.
+pub fn validate_nextjs_standalone_config(repo_path: &Path) -> Result<(), String> {
+    // List of possible Next.js config file names
+    let config_files = [
+        "next.config.js",
+        "next.config.ts",
+        "next.config.mjs",
+    ];
+
+    // Find which config file exists
+    let config_file = config_files
+        .iter()
+        .find(|f| repo_path.join(f).exists());
+
+    match config_file {
+        Some(filename) => {
+            // Read the config file
+            let config_path = repo_path.join(filename);
+            let content = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("Failed to read {}: {}", filename, e))?;
+
+            // Check if standalone output is configured
+            // We look for patterns like:
+            // - output: "standalone"
+            // - output: 'standalone'
+            // - output:"standalone"
+            // - output:'standalone'
+            let has_standalone = content.contains("output")
+                && (content.contains("\"standalone\"") || content.contains("'standalone'"));
+
+            if has_standalone {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Next.js standalone output required\n  \
+                     Add `output: \"standalone\"` to your {}\n  \
+                     Documentation: https://nextjs.org/docs/app/api-reference/config/next-config-js/output",
+                    filename
+                ))
+            }
+        }
+        None => {
+            // No config file found - user needs to create one
+            Err(
+                "Next.js standalone output required\n  \
+                 Create a next.config.js file with `output: \"standalone\"`\n  \
+                 Documentation: https://nextjs.org/docs/app/api-reference/config/next-config-js/output"
+                    .to_string()
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +532,85 @@ axum = "0.7"
 
         let result = detect_stack(dir.path());
         assert!(result.has_dockerfile);
+    }
+
+    #[test]
+    fn test_validate_nextjs_standalone_with_standalone() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("next.config.js"),
+            r#"
+module.exports = {
+  output: "standalone",
+  reactStrictMode: true,
+}
+"#,
+        )
+        .unwrap();
+
+        let result = validate_nextjs_standalone_config(dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_nextjs_standalone_with_single_quotes() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("next.config.ts"),
+            r#"
+const config = {
+  output: 'standalone',
+}
+export default config
+"#,
+        )
+        .unwrap();
+
+        let result = validate_nextjs_standalone_config(dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_nextjs_standalone_missing() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("next.config.js"),
+            r#"
+module.exports = {
+  reactStrictMode: true,
+}
+"#,
+        )
+        .unwrap();
+
+        let result = validate_nextjs_standalone_config(dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("standalone output required"));
+    }
+
+    #[test]
+    fn test_validate_nextjs_standalone_no_config_file() {
+        let dir = tempdir().unwrap();
+
+        let result = validate_nextjs_standalone_config(dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Create a next.config.js"));
+    }
+
+    #[test]
+    fn test_validate_nextjs_standalone_mjs() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("next.config.mjs"),
+            r#"
+export default {
+  output: "standalone",
+}
+"#,
+        )
+        .unwrap();
+
+        let result = validate_nextjs_standalone_config(dir.path());
+        assert!(result.is_ok());
     }
 }
